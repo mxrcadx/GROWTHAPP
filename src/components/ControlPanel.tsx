@@ -2,7 +2,9 @@ import { useStore } from '../store';
 import { getCellData, getAdjacency } from './MapView';
 import { exportPhaseDXF, downloadDXF } from '../utils/dxf';
 import { exportPythonScript, downloadPythonScript } from '../utils/exportPython';
-import { useRef, useEffect, useCallback } from 'react';
+import { exportFrameSequence, DEFAULT_EXPORT_CONFIG } from '../utils/exportFrames';
+import { renderPlanToCanvas } from './MapView';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import type { SimulationResult } from '../types';
 
 const PHASE_OPTIONS = [40, 100, 150, 200];
@@ -132,6 +134,34 @@ export default function ControlPanel() {
     downloadPythonScript(script, `growth_sim_4x.py`);
   }, [phases, seedId, targetId, landCurve, floorCurve]);
 
+  const [exportProgress, setExportProgress] = useState<{ pct: number; label: string } | null>(null);
+
+  const handleExportFrames = useCallback(async () => {
+    if (phases.length === 0 || !seedId || !targetId) return;
+    setPlaying(false);
+    try {
+      await exportFrameSequence(
+        renderPlanToCanvas,
+        DEFAULT_EXPORT_CONFIG,
+        (p) => {
+          if (p.stage === 'rendering') {
+            setExportProgress({
+              pct: Math.round((p.current / p.total) * 100),
+              label: 'RENDERING ' + p.current + '/' + p.total,
+            });
+          } else if (p.stage === 'packing') {
+            setExportProgress({ pct: 100, label: 'PACKING ZIP...' });
+          } else {
+            setExportProgress(null);
+          }
+        },
+      );
+    } catch (err) {
+      setExportProgress(null);
+      console.error('Export failed:', err);
+    }
+  }, [phases.length, seedId, targetId]);
+
   const handleResetPlacement = useCallback(() => {
     setPlaying(false);
     useStore.getState().setSeedId(null);
@@ -191,16 +221,42 @@ export default function ControlPanel() {
             </button>
           </div>
           <div>
-            <div style={styles.miniLabel}>EXPORT SIMULATION</div>
+            <div style={styles.miniLabel}>EXPORT SIM</div>
             <button
               onClick={handleExportPython}
               style={styles.exportBtn}
               disabled={phases.length === 0}
             >
-              PYTHON 4x
+              PY 4x
+            </button>
+          </div>
+          <div>
+            <div style={styles.miniLabel}>EXPORT VIDEO</div>
+            <button
+              onClick={handleExportFrames}
+              style={styles.exportBtn}
+              disabled={!seedId || !targetId || phases.length === 0 || exportProgress !== null}
+            >
+              60FPS
             </button>
           </div>
         </div>
+        {exportProgress && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+              <span style={{ color: '#007AFF', fontSize: 9 }}>{exportProgress.label}</span>
+              <span style={{ color: '#007AFF', fontSize: 9 }}>{exportProgress.pct}%</span>
+            </div>
+            <div style={styles.progressTrack}>
+              <div style={{ ...styles.progressBar, width: exportProgress.pct + '%' }} />
+            </div>
+          </div>
+        )}
+        {!seedId && phases.length === 0 && (
+          <div style={{ marginTop: 6, color: '#555', fontSize: 9 }}>
+            PLACE SEED + TARGET TO ENABLE EXPORT
+          </div>
+        )}
       </div>
 
       {/* Playback */}
@@ -276,9 +332,11 @@ export default function ControlPanel() {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     position: 'absolute',
-    bottom: 12,
-    left: 12,
-    width: 220,
+    bottom: 8,
+    left: 4,
+    width: 'calc(20% - 8px)',
+    maxHeight: 'calc(75% - 16px)',
+    overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
@@ -344,6 +402,17 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
     letterSpacing: '0.1em',
+  },
+  progressTrack: {
+    width: '100%',
+    height: 4,
+    background: '#1a1a1a',
+    border: '0.5px solid #333',
+  },
+  progressBar: {
+    height: '100%',
+    background: '#007AFF',
+    transition: 'width 0.1s linear',
   },
   resetBtn: {
     marginTop: 6,

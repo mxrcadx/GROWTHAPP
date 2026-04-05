@@ -48,8 +48,8 @@ export function exportPhaseDXF(
   phaseIndex: number,
   allCells: Record<string, CellData>,
 ): string {
-  const HALF = 500; // 1km / 2
-  const LEVEL_H = 250; // 250m per level for legibility
+  const HALF = 250; // 500m / 2
+  const LEVEL_H = 125; // per level for legibility
   const layers = ['GRID_CELLS', 'LEVEL_1', 'LEVEL_2', 'LEVEL_3', 'LEVEL_4'];
 
   let dxf = dxfHeader();

@@ -19,8 +19,10 @@ let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 // Projection types
 type ProjectFn = (wx: number, wy: number, wz: number) => [number, number];
 
-const HALF = 500; // half cell size in world units
-const LEVEL_H = 2000; // extrusion height per level in world units
+const HALF = 250; // half cell size in world units (500m grid)
+const GAP = 10; // 10m inset per side = 20m gap between cells
+const DRAW_HALF = HALF - GAP; // rendered half-size with gap
+const LEVEL_H = 1000; // extrusion height per level in world units
 
 // ====================== PROJECTION FUNCTIONS ======================
 
@@ -67,6 +69,8 @@ function renderViewport(
   project: ProjectFn,
   mode: 'plan' | 'iso' | 'elev',
   showTerrain: boolean,
+  transparentBg: boolean = false,
+  showLabels: boolean = true,
 ) {
   if (!cellDataCache) return;
 
@@ -75,11 +79,15 @@ function renderViewport(
     ? store.phases[store.currentPhase] : null;
   const maxAge = store.currentPhase;
   const scale = store.viewScale;
-  const cellPx = HALF * scale;
+  const cellPx = DRAW_HALF * scale;
 
   // Background
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, vw, vh);
+  if (transparentBg) {
+    ctx.clearRect(0, 0, vw, vh);
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, vw, vh);
+  }
 
   // Terrain (plan only)
   if (showTerrain && terrainImage && terrainMeta && mode === 'plan') {
@@ -117,21 +125,19 @@ function renderViewport(
     ctx.stroke();
   }
 
-  // Base grid cells
+  // Base grid cells — transparent fill, visible outline
   const cache = cellDataCache;
   if (mode === 'plan') {
     for (const [, c] of Object.entries(cache)) {
       const [sx, sy] = project(c.cx, c.cy, 0);
       if (sx + cellPx < 0 || sx - cellPx > vw || sy + cellPx < 0 || sy - cellPx > vh) continue;
-      ctx.fillStyle = '#1a1a1a';
-      ctx.strokeStyle = '#262626';
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
       ctx.lineWidth = 0.5;
-      ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
       ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
     }
   } else if (mode === 'iso') {
     for (const [, c] of Object.entries(cache)) {
-      drawQuad(ctx, project, c.cx, c.cy, 0, '#1a1a1a', '#262626');
+      drawQuad(ctx, project, c.cx, c.cy, 0, 'transparent', 'rgba(255,255,255,0.06)');
     }
   }
 
@@ -158,8 +164,9 @@ function renderViewport(
       if (data.levels === 0) {
         if (mode === 'plan') {
           const [sx, sy] = project(c.cx, c.cy, 0);
-          ctx.fillStyle = '#222';
-          ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
+          ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
         }
         continue;
       }
@@ -170,15 +177,14 @@ function renderViewport(
       if (mode === 'plan') {
         const [sx, sy] = project(c.cx, c.cy, 0);
         if (sx + cellPx * 2 < 0 || sx - cellPx * 2 > vw || sy + cellPx * 2 < 0 || sy - cellPx * 2 > vh) continue;
-        const grow = cellPx * 0.15;
         ctx.shadowColor = `rgb(${r},${g},${b})`;
         ctx.shadowBlur = 6;
         ctx.fillStyle = `rgba(${r},${g},${b},${baseAlpha.toFixed(2)})`;
-        ctx.fillRect(sx - cellPx - grow, sy - cellPx - grow, (cellPx + grow) * 2, (cellPx + grow) * 2);
+        ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
         ctx.shadowBlur = 0;
         ctx.strokeStyle = `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 60)},${Math.min(255, b + 60)},0.5)`;
         ctx.lineWidth = 0.5;
-        ctx.strokeRect(sx - cellPx - grow, sy - cellPx - grow, (cellPx + grow) * 2, (cellPx + grow) * 2);
+        ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
         if (data.levels > 1) {
           ctx.fillStyle = '#fff';
           ctx.font = `${Math.max(7, cellPx * 0.8)}px "ABC Diatype Mono", monospace`;
@@ -194,8 +200,8 @@ function renderViewport(
     }
   }
 
-  // Seed/target markers (plan only)
-  if (mode === 'plan') {
+  // Seed/target markers (plan only, not in export)
+  if (mode === 'plan' && showLabels) {
     if (store.seedId && cache[store.seedId]) {
       const c = cache[store.seedId];
       const [sx, sy] = project(c.cx, c.cy, 0);
@@ -232,16 +238,18 @@ function renderViewport(
   }
 
   // View label
-  ctx.fillStyle = '#555';
-  ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'bottom';
-  const labels: Record<string, string> = {
-    plan: 'PLAN VIEW',
-    iso: 'ISOMETRIC',
-    elev: 'ELEVATION FROM SOUTH',
-  };
-  ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 8, vh - 8);
+  if (showLabels) {
+    ctx.fillStyle = '#555';
+    ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    const labels: Record<string, string> = {
+      plan: 'PLAN VIEW',
+      iso: 'ISOMETRIC',
+      elev: 'ELEVATION FROM SOUTH',
+    };
+    ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 8, vh - 8);
+  }
 }
 
 // ====================== DRAWING HELPERS ======================
@@ -251,11 +259,12 @@ function drawQuad(
   cx: number, cy: number, z: number,
   fill: string, stroke?: string,
 ) {
+  const H = DRAW_HALF;
   const pts = [
-    project(cx - HALF, cy - HALF, z),
-    project(cx + HALF, cy - HALF, z),
-    project(cx + HALF, cy + HALF, z),
-    project(cx - HALF, cy + HALF, z),
+    project(cx - H, cy - H, z),
+    project(cx + H, cy - H, z),
+    project(cx + H, cy + H, z),
+    project(cx - H, cy + H, z),
   ];
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
@@ -284,10 +293,11 @@ function drawIsoCube(
     const dark2 = `rgba(${Math.round(r * 0.65)},${Math.round(g * 0.65)},${Math.round(b * 0.65)},${(a * 0.9).toFixed(2)})`;
     const stroke = `rgba(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)},0.4)`;
 
+    const H = DRAW_HALF;
     // Right face
     const rf = [
-      project(cx - HALF, cy - HALF, zBot), project(cx + HALF, cy - HALF, zBot),
-      project(cx + HALF, cy - HALF, zTop), project(cx - HALF, cy - HALF, zTop),
+      project(cx - H, cy - H, zBot), project(cx + H, cy - H, zBot),
+      project(cx + H, cy - H, zTop), project(cx - H, cy - H, zTop),
     ];
     ctx.beginPath();
     ctx.moveTo(rf[0][0], rf[0][1]);
@@ -299,8 +309,8 @@ function drawIsoCube(
 
     // Left face
     const lf = [
-      project(cx - HALF, cy + HALF, zBot), project(cx - HALF, cy - HALF, zBot),
-      project(cx - HALF, cy - HALF, zTop), project(cx - HALF, cy + HALF, zTop),
+      project(cx - H, cy + H, zBot), project(cx - H, cy - H, zBot),
+      project(cx - H, cy - H, zTop), project(cx - H, cy + H, zTop),
     ];
     ctx.beginPath();
     ctx.moveTo(lf[0][0], lf[0][1]);
@@ -327,8 +337,8 @@ function drawElevCube(
     const fill = `rgba(${r},${g},${b},${a.toFixed(2)})`;
     const stroke = `rgba(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)},0.4)`;
 
-    const [x0, y0] = project(cx - HALF, 0, zBot);
-    const [x1, y1] = project(cx + HALF, 0, zTop);
+    const [x0, y0] = project(cx - DRAW_HALF, 0, zBot);
+    const [x1, y1] = project(cx + DRAW_HALF, 0, zTop);
     const w = x1 - x0;
     const h = y1 - y0;
     ctx.fillStyle = fill;
@@ -337,6 +347,27 @@ function drawElevCube(
     ctx.lineWidth = 0.5;
     ctx.strokeRect(x0, y1, w, -h);
   }
+}
+
+// ====================== PUBLIC RENDER API ======================
+
+/** Render the plan viewport to an arbitrary canvas at the current store state. */
+export function renderPlanToCanvas(canvas: HTMLCanvasElement, _phaseIndex: number) {
+  if (!cellDataCache) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  // Clear to transparent
+  ctx.clearRect(0, 0, w, h);
+  // Scale to fit the export canvas
+  const dataW = maxX - minX + 4000;
+  const dataH = maxY - minY + 4000;
+  const fitScale = Math.min(w / dataW, h / dataH);
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const proj = makePlanProject(w, h, centerX, centerY, fitScale);
+  renderViewport(ctx, w, h, proj, 'plan', false, true, false); // no terrain, transparent bg, no labels
 }
 
 // ====================== MAIN COMPONENT ======================
@@ -364,8 +395,8 @@ export default function MapView() {
   // Load data
   useEffect(() => {
     Promise.all([
-      fetch('/data/growth_cell_data_1km.json').then(r => r.json()) as Promise<GrowthCellDataFile>,
-      fetch('/data/growth_adjacency_1km.json').then(r => r.json()) as Promise<GrowthAdjacencyFile>,
+      fetch('/data/growth_cell_data_500m.json').then(r => r.json()) as Promise<GrowthCellDataFile>,
+      fetch('/data/growth_adjacency_500m.json').then(r => r.json()) as Promise<GrowthAdjacencyFile>,
       fetch('/data/coastline_3057.json').then(r => r.json()).catch(() => null),
       fetch('/data/terrain_meta.json').then(r => r.json()).catch(() => null),
     ]).then(([cellFile, adjFile, coast, tMeta]) => {
@@ -547,82 +578,68 @@ export default function MapView() {
   };
 
   return (
-    <div style={styles.container}>
-      {/* LEFT: two ISO views stacked */}
-      <div style={styles.leftCol}>
-        <div style={styles.isoWrapper}>
-          <canvas ref={isoSwRef} {...secondaryHandlers} style={styles.canvas} />
-          <div style={styles.viewLabel}>ISO SW</div>
-        </div>
-        <div style={styles.isoWrapper}>
-          <canvas ref={isoNwRef} {...secondaryHandlers} style={styles.canvas} />
-          <div style={styles.viewLabel}>ISO NW</div>
-        </div>
+    <div style={styles.grid}>
+      {/* Row 1: ISO SW + Elevation */}
+      <div style={styles.cell}>
+        <canvas ref={isoSwRef} {...secondaryHandlers} style={styles.canvas} />
+        <div style={styles.viewLabel}>ISO SW</div>
+      </div>
+      <div style={styles.elevCell}>
+        <canvas ref={elevRef} {...secondaryHandlers} style={styles.canvas} />
+        <div style={styles.viewLabel}>ELEVATION S</div>
       </div>
 
-      {/* CENTER: slender elevation on top, large plan below */}
-      <div style={styles.centerCol}>
-        <div style={styles.elevWrapper}>
-          <canvas ref={elevRef} {...secondaryHandlers} style={styles.canvas} />
-          <div style={styles.viewLabel}>ELEVATION S</div>
-        </div>
-        <div style={styles.planWrapper}>
-          <canvas
-            ref={planRef}
-            onClick={handlePlanClick}
-            onWheel={handleWheel}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onContextMenu={(e) => e.preventDefault()}
-            style={{ ...styles.canvas, cursor: pm !== 'none' ? 'crosshair' : 'grab' }}
-          />
-        </div>
+      {/* Row 2: ISO NW + Plan */}
+      <div style={styles.cell}>
+        <canvas ref={isoNwRef} {...secondaryHandlers} style={styles.canvas} />
+        <div style={styles.viewLabel}>ISO NW</div>
+      </div>
+      <div style={styles.planCell}>
+        <canvas
+          ref={planRef}
+          onClick={handlePlanClick}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onContextMenu={(e) => e.preventDefault()}
+          style={{ ...styles.canvas, cursor: pm !== 'none' ? 'crosshair' : 'grab' }}
+        />
       </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
+  grid: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    bottom: 290, // leave room for bottom bar
-    display: 'flex',
+    bottom: 0,
+    display: 'grid',
+    gridTemplateColumns: '1fr 4fr',
+    gridTemplateRows: '120px 1fr',
     gap: 2,
   },
-  leftCol: {
-    flex: '0 0 200px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-  },
-  isoWrapper: {
-    flex: 1,
+  cell: {
     position: 'relative',
     border: '0.5px solid #333',
     overflow: 'hidden',
+    minHeight: 0,
   },
-  centerCol: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-  },
-  elevWrapper: {
-    flex: '0 0 120px',
+  elevCell: {
     position: 'relative',
     border: '0.5px solid #333',
     overflow: 'hidden',
+    minHeight: 0,
   },
-  planWrapper: {
-    flex: 1,
+  planCell: {
     position: 'relative',
     border: '0.5px solid #333',
     overflow: 'hidden',
+    minHeight: 0,
   },
   canvas: {
     width: '100%',

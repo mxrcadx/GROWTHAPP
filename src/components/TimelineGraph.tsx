@@ -390,9 +390,9 @@ export default function TimelineGraph() {
 const styles: Record<string, React.CSSProperties> = {
   wrapper: {
     position: 'absolute',
-    bottom: 12,
-    left: 244,
-    right: 12,
+    bottom: 8,
+    left: 'calc(20% + 4px)',
+    right: 8,
     height: HEIGHT,
     zIndex: 10,
   },

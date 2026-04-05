@@ -20,7 +20,7 @@ interface WorkerInput {
   floorCurve: CurvePoint[];
 }
 
-const CELL_AREA_KM2 = 1.0;
+const CELL_AREA_KM2 = 0.25; // 500m grid: 0.5km × 0.5km = 0.25 km²
 
 /** Monotone cubic interpolation (Fritsch-Carlson) for smooth curves through control points */
 function interpolateCurve(points: CurvePoint[], phase: number): number {
