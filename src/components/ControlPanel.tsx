@@ -1,6 +1,7 @@
 import { useStore } from '../store';
 import { getCellData, getAdjacency } from './MapView';
 import { exportPhaseDXF, downloadDXF } from '../utils/dxf';
+import { exportPythonScript, downloadPythonScript } from '../utils/exportPython';
 import { useRef, useEffect, useCallback } from 'react';
 import type { SimulationResult } from '../types';
 
@@ -124,6 +125,13 @@ export default function ControlPanel() {
     downloadDXF(dxf, `growth_phase_${padded}.dxf`);
   }, [phases, currentPhase]);
 
+  const handleExportPython = useCallback(() => {
+    const cells = getCellData();
+    if (!cells || phases.length === 0) return;
+    const script = exportPythonScript(phases, cells, seedId, targetId, landCurve, floorCurve);
+    downloadPythonScript(script, `growth_sim_4x.py`);
+  }, [phases, seedId, targetId, landCurve, floorCurve]);
+
   const handleResetPlacement = useCallback(() => {
     setPlaying(false);
     useStore.getState().setSeedId(null);
@@ -184,8 +192,12 @@ export default function ControlPanel() {
           </div>
           <div>
             <div style={styles.miniLabel}>EXPORT SIMULATION</div>
-            <button style={{ ...styles.exportBtn, color: '#555', borderColor: '#333' }} disabled>
-              PYTHON SCRIPT
+            <button
+              onClick={handleExportPython}
+              style={styles.exportBtn}
+              disabled={phases.length === 0}
+            >
+              PYTHON 4x
             </button>
           </div>
         </div>
