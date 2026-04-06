@@ -34,5 +34,3 @@ export interface SimulationResult {
 }
 
 export type PlacementMode = 'none' | 'seed' | 'target';
-
-export type ViewMode = 'plan' | 'axon';

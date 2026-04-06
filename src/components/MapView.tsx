@@ -86,22 +86,13 @@ function makeIsoProject(
   };
 }
 
-function makeElevProject(vw: number, vh: number, cx: number, cy: number, scale: number): ProjectFn {
-  const screenCX = vw / 2;
-  const screenCY = vh * 0.8;
-  return (wx, _wy, wz) => {
-    const x = wx - cx;
-    return [x * scale + screenCX, -wz * scale + screenCY];
-  };
-}
-
 // ====================== RENDER ENGINE ======================
 
 function renderViewport(
   ctx: CanvasRenderingContext2D,
   vw: number, vh: number,
   project: ProjectFn,
-  mode: 'plan' | 'iso' | 'elev',
+  mode: 'plan' | 'iso',
   showTerrain: boolean,
   transparentBg: boolean = false,
   showLabels: boolean = true,
@@ -134,7 +125,7 @@ function renderViewport(
   }
 
   // Coastline
-  if (coastlineData && mode !== 'elev') {
+  if (coastlineData) {
     ctx.strokeStyle = mode === 'plan' ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)';
     ctx.lineWidth = mode === 'plan' ? 1.2 : 0.8;
     for (const line of coastlineData.lines) {
@@ -230,22 +221,9 @@ function renderViewport(
     ctx.fillText('km', RULER_W / 2, vh - RULER_H / 2);
   }
 
-  // Elevation ground line
-  if (mode === 'elev') {
-    const [glx] = project(minX - 5000, 0, 0);
-    const [grx, gry] = project(maxX + 5000, 0, 0);
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(glx, gry);
-    ctx.lineTo(grx, gry);
-    ctx.stroke();
-  }
-
   // Base grid cells — transparent fill, visible outline
-  const cache = cellDataCache;
   if (mode === 'plan') {
-    for (const [, c] of Object.entries(cache)) {
+    for (const [, c] of Object.entries(cellDataCache)) {
       const [sx, sy] = project(c.cx, c.cy, 0);
       if (sx + cellPx < 0 || sx - cellPx > vw || sy + cellPx < 0 || sy - cellPx > vh) continue;
       ctx.strokeStyle = 'rgba(255,255,255,0.08)';
@@ -253,7 +231,7 @@ function renderViewport(
       ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
     }
   } else if (mode === 'iso') {
-    for (const [, c] of Object.entries(cache)) {
+    for (const [, c] of Object.entries(cellDataCache)) {
       drawQuad(ctx, project, c.cx, c.cy, 0, 'transparent', 'rgba(255,255,255,0.06)');
     }
   }
@@ -263,19 +241,15 @@ function renderViewport(
     let entries = Object.entries(snapshot.occupied);
     if (mode === 'iso') {
       entries = entries
-        .filter(([id]) => cache[id])
+        .filter(([id]) => cellDataCache![id])
         .sort(([aId], [bId]) => {
-          const ca = cache[aId], cb = cache[bId];
+          const ca = cellDataCache![aId], cb = cellDataCache![bId];
           return (ca.cy - cb.cy) || (ca.cx - cb.cx);
         });
-    } else if (mode === 'elev') {
-      entries = entries
-        .filter(([id]) => cache[id])
-        .sort(([aId], [bId]) => cache[bId].cy - cache[aId].cy);
     }
 
     for (const [id, data] of entries) {
-      const c = cache[id];
+      const c = cellDataCache![id];
       if (!c) continue;
 
       if (data.levels === 0) {
@@ -311,16 +285,14 @@ function renderViewport(
         }
       } else if (mode === 'iso') {
         drawIsoCube(ctx, project, c.cx, c.cy, data.levels, r, g, b, baseAlpha);
-      } else if (mode === 'elev') {
-        drawElevCube(ctx, project, c.cx, c.cy, data.levels, r, g, b, baseAlpha);
       }
     }
   }
 
   // Seed/target markers (plan only, not in export)
   if (mode === 'plan' && showLabels) {
-    if (store.seedId && cache[store.seedId]) {
-      const c = cache[store.seedId];
+    if (store.seedId && cellDataCache![store.seedId]) {
+      const c = cellDataCache![store.seedId];
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
@@ -329,8 +301,8 @@ function renderViewport(
       ctx.textBaseline = 'alphabetic';
       ctx.fillText('SEED', sx, sy - 12);
     }
-    if (store.targetId && cache[store.targetId]) {
-      const c = cache[store.targetId];
+    if (store.targetId && cellDataCache![store.targetId]) {
+      const c = cellDataCache![store.targetId];
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
@@ -339,8 +311,8 @@ function renderViewport(
       ctx.textBaseline = 'alphabetic';
       ctx.fillText('TARGET', sx, sy - 12);
     }
-    if (store.seedId && store.targetId && cache[store.seedId] && cache[store.targetId]) {
-      const s = cache[store.seedId], t = cache[store.targetId];
+    if (store.seedId && store.targetId && cellDataCache![store.seedId] && cellDataCache![store.targetId]) {
+      const s = cellDataCache![store.seedId], t = cellDataCache![store.targetId];
       const [sx1, sy1] = project(s.cx, s.cy, 0);
       const [sx2, sy2] = project(t.cx, t.cy, 0);
       ctx.strokeStyle = 'rgba(255,0,0,0.3)';
@@ -363,7 +335,6 @@ function renderViewport(
     const labels: Record<string, string> = {
       plan: 'PLAN VIEW — ISN93 / EPSG:3057',
       iso: 'ISOMETRIC NW',
-      elev: 'ELEVATION FROM SOUTH',
     };
     ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 10, vh - 10);
   }
@@ -442,29 +413,6 @@ function drawIsoCube(
   }
 }
 
-function drawElevCube(
-  ctx: CanvasRenderingContext2D, project: ProjectFn,
-  cx: number, _cy: number, levels: number,
-  r: number, g: number, b: number, alpha: number,
-) {
-  for (let lev = 0; lev < levels; lev++) {
-    const zBot = lev * LEVEL_H;
-    const zTop = (lev + 1) * LEVEL_H;
-    const a = alpha * (0.6 + 0.4 * ((lev + 1) / levels));
-    const fill = `rgba(${r},${g},${b},${a.toFixed(2)})`;
-    const stroke = `rgba(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)},0.4)`;
-
-    const [x0, y0] = project(cx - DRAW_HALF, 0, zBot);
-    const [x1, y1] = project(cx + DRAW_HALF, 0, zTop);
-    const w = x1 - x0;
-    const h = y1 - y0;
-    ctx.fillStyle = fill;
-    ctx.fillRect(x0, y1, w, -h);
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(x0, y1, w, -h);
-  }
-}
 
 // ====================== PUBLIC RENDER API ======================
 
@@ -569,7 +517,7 @@ export default function MapView() {
       const renderCanvas = (
         canvasEl: HTMLCanvasElement | null,
         projFn: (w: number, h: number) => ProjectFn,
-        mode: 'plan' | 'iso' | 'elev',
+        mode: 'plan' | 'iso',
         terrain: boolean,
       ) => {
         if (!canvasEl || !cellDataCache) return;
@@ -695,20 +643,14 @@ export default function MapView() {
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   };
 
-  // Compute scale bar for info panel
-  const scaleBarInfo = useCallback(() => {
-    const store = useStore.getState();
-    const s = store.viewScale;
-    // Approximate: 1 world unit = s pixels. Find a nice round distance.
-    const candidates = [500, 1000, 2000, 5000, 10000, 20000, 50000];
-    let dist = 5000;
-    for (const c of candidates) {
-      if (c * s > 40 && c * s < 200) { dist = c; break; }
-    }
-    return { dist, px: dist * s, label: dist >= 1000 ? `${dist / 1000} km` : `${dist} m` };
-  }, []);
-
-  const sb = scaleBarInfo();
+  // Scale bar for info panel
+  const s = viewScale;
+  const sbCandidates = [500, 1000, 2000, 5000, 10000, 20000, 50000];
+  let sbDist = 5000;
+  for (const c of sbCandidates) {
+    if (c * s > 40 && c * s < 200) { sbDist = c; break; }
+  }
+  const sb = { px: sbDist * s, label: sbDist >= 1000 ? `${sbDist / 1000} km` : `${sbDist} m` };
 
   return (
     <div style={styles.grid}>
@@ -717,7 +659,7 @@ export default function MapView() {
         <canvas ref={isoNwRef} {...secondaryHandlers} style={styles.canvas} />
         <div style={styles.viewLabel}>ISO NW</div>
       </div>
-      <div style={styles.planCell}>
+      <div style={styles.cell}>
         <canvas
           ref={planRef}
           onClick={handlePlanClick}
@@ -797,14 +739,6 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     overflowY: 'auto',
   },
-  infoTitle: {
-    color: '#F5F5F5',
-    fontSize: 12,
-    fontWeight: 600,
-    letterSpacing: '0.1em',
-    lineHeight: '16px',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-  },
   infoSection: {
     color: '#666',
     fontSize: 10,
@@ -827,18 +761,6 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     minHeight: 0,
     background: 'rgba(0,0,0,0.95)',
-  },
-  elevCell: {
-    position: 'relative',
-    border: '0.5px solid #333',
-    overflow: 'hidden',
-    minHeight: 0,
-  },
-  planCell: {
-    position: 'relative',
-    border: '0.5px solid #333',
-    overflow: 'hidden',
-    minHeight: 0,
   },
   canvas: {
     width: '100%',
