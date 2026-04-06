@@ -189,11 +189,36 @@ export default function ControlPanel() {
         )}
       </div>
 
+      {/* Phase Slider */}
+      {phases.length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.miniLabel}>PHASE SCRUBBER</div>
+          <input
+            type="range"
+            min={0}
+            max={phases.length - 1}
+            value={currentPhase}
+            onChange={(e) => {
+              setPlaying(false);
+              setCurrentPhase(Number(e.target.value));
+            }}
+            style={styles.slider}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#555', fontSize: 9 }}>0</span>
+            <span style={{ color: '#F5F5F5', fontSize: 10 }}>{currentPhase}</span>
+            <span style={{ color: '#555', fontSize: 9 }}>{phases.length - 1}</span>
+          </div>
+        </div>
+      )}
+
       {/* Growth Profile Info */}
       <div style={{ ...styles.section, borderColor: '#007AFF' }}>
         <div style={{ ...styles.sectionTitle, color: '#007AFF' }}>GROWTH PROFILE</div>
-        <div style={styles.grayText}>DRAG POINTS ON BOTTOM GRAPH</div>
-        <div style={styles.grayText}>WHITE = LAND AREA</div>
+        <div style={styles.grayText}>DRAG POINTS ON GRAPH</div>
+        <div style={styles.grayText}>DBL-CLICK = ADD POINT</div>
+        <div style={styles.grayText}>RIGHT-CLICK = REMOVE</div>
+        <div style={{ ...styles.grayText, marginTop: 4 }}>WHITE = LAND AREA</div>
         <div style={styles.grayText}>BLUE = FLOOR SPACE</div>
         {phases.length > 0 && phases[currentPhase] && (
           <div style={{ marginTop: 6 }}>
@@ -334,8 +359,8 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute',
     bottom: 8,
     left: 4,
-    width: 'calc(20% - 8px)',
-    maxHeight: 'calc(75% - 16px)',
+    width: 'calc(11.76% - 8px)',
+    maxHeight: 'calc(100% - 16px)',
     overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
@@ -351,18 +376,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sectionTitle: {
     color: '#999',
-    fontSize: 10,
+    fontSize: 11,
     marginBottom: 8,
     letterSpacing: '0.05em',
   },
   label: {
     color: '#F5F5F5',
-    fontSize: 10,
+    fontSize: 11,
     letterSpacing: '0.05em',
   },
   grayText: {
     color: '#555',
-    fontSize: 10,
+    fontSize: 11,
     marginBottom: 2,
   },
   row: {
@@ -370,7 +395,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   miniLabel: {
-    fontSize: 9,
+    fontSize: 10,
     color: '#999',
     marginBottom: 4,
   },
@@ -423,5 +448,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 8px',
     cursor: 'pointer',
     fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+  },
+  slider: {
+    width: '100%',
+    height: 4,
+    appearance: 'none' as const,
+    background: '#333',
+    outline: 'none',
+    cursor: 'pointer',
+    marginBottom: 4,
+    accentColor: '#007AFF',
   },
 };

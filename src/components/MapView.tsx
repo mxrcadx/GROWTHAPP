@@ -9,6 +9,7 @@ let adjacencyCache: Record<string, string[]> | null = null;
 let coastlineData: { lines: [number, number][][] } | null = null;
 let terrainImage: HTMLImageElement | null = null;
 let terrainMeta: { left: number; bottom: number; right: number; top: number } | null = null;
+let clippedTerrainCanvas: HTMLCanvasElement | null = null; // ocean-clipped terrain
 
 export function getCellData() { return cellDataCache; }
 export function getAdjacency() { return adjacencyCache; }
@@ -23,6 +24,39 @@ const HALF = 250; // half cell size in world units (500m grid)
 const GAP = 10; // 10m inset per side = 20m gap between cells
 const DRAW_HALF = HALF - GAP; // rendered half-size with gap
 const LEVEL_H = 1000; // extrusion height per level in world units
+
+// ====================== COASTLINE CLIP ======================
+
+/** Pre-render terrain clipped to coastline boundary (removes grey ocean) */
+function buildClippedTerrain() {
+  if (!terrainImage || !terrainMeta || !coastlineData) return;
+  const cw = terrainImage.width;
+  const ch = terrainImage.height;
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = cw;
+  offCanvas.height = ch;
+  const ctx = offCanvas.getContext('2d')!;
+
+  // Map world coords to pixel coords in the terrain image
+  const m = terrainMeta;
+  const toPixX = (wx: number) => ((wx - m.left) / (m.right - m.left)) * cw;
+  const toPixY = (wy: number) => ((m.top - wy) / (m.top - m.bottom)) * ch;
+
+  // Build clip path from coastline polygons
+  ctx.beginPath();
+  for (const line of coastlineData.lines) {
+    if (line.length < 3) continue;
+    ctx.moveTo(toPixX(line[0][0]), toPixY(line[0][1]));
+    for (let i = 1; i < line.length; i++) {
+      ctx.lineTo(toPixX(line[i][0]), toPixY(line[i][1]));
+    }
+    ctx.closePath();
+  }
+  ctx.clip();
+  ctx.drawImage(terrainImage, 0, 0);
+
+  clippedTerrainCanvas = offCanvas;
+}
 
 // ====================== PROJECTION FUNCTIONS ======================
 
@@ -89,11 +123,14 @@ function renderViewport(
     ctx.fillRect(0, 0, vw, vh);
   }
 
-  // Terrain (plan only)
-  if (showTerrain && terrainImage && terrainMeta && mode === 'plan') {
-    const [tlx, tly] = project(terrainMeta.left, terrainMeta.top, 0);
-    const [brx, bry] = project(terrainMeta.right, terrainMeta.bottom, 0);
-    ctx.drawImage(terrainImage, tlx, tly, brx - tlx, bry - tly);
+  // Terrain (plan only) — use clipped version to remove ocean
+  if (showTerrain && terrainMeta && mode === 'plan') {
+    const src = clippedTerrainCanvas || terrainImage;
+    if (src) {
+      const [tlx, tly] = project(terrainMeta.left, terrainMeta.top, 0);
+      const [brx, bry] = project(terrainMeta.right, terrainMeta.bottom, 0);
+      ctx.drawImage(src, tlx, tly, brx - tlx, bry - tly);
+    }
   }
 
   // Coastline
@@ -111,6 +148,86 @@ function renderViewport(
       }
       ctx.stroke();
     }
+  }
+
+  // Coordinate grid (plan view) — grid lines move with map, labels pinned to viewport edges
+  if (mode === 'plan') {
+    // Choose grid step based on zoom: pick the largest step that gives ≥80px spacing
+    const stepCandidates = [1000, 2000, 5000, 10000, 20000, 50000];
+    let gridStep = stepCandidates[stepCandidates.length - 1];
+    for (const s of stepCandidates) {
+      if (s * scale >= 80) { gridStep = s; break; }
+    }
+
+    // Determine visible world extent from viewport edges
+    const ox = vw / 2 - store.viewCenterX * scale;
+    const oy = vh / 2 + store.viewCenterY * scale;
+    const visMinWX = (0 - ox) / scale;
+    const visMaxWX = (vw - ox) / scale;
+    const visMaxWY = -(0 - oy) / scale;
+    const visMinWY = -(vh - oy) / scale;
+
+    const gridStartX = Math.floor(visMinWX / gridStep) * gridStep;
+    const gridEndX = Math.ceil(visMaxWX / gridStep) * gridStep;
+    const gridStartY = Math.floor(visMinWY / gridStep) * gridStep;
+    const gridEndY = Math.ceil(visMaxWY / gridStep) * gridStep;
+
+    const RULER_W = 50; // left ruler width for northing labels
+    const RULER_H = 16; // bottom ruler height for easting labels
+
+    // Draw grid lines (move with map)
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([4, 8]);
+    for (let x = gridStartX; x <= gridEndX; x += gridStep) {
+      const [sx] = project(x, 0, 0);
+      ctx.beginPath();
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, vh - RULER_H);
+      ctx.stroke();
+    }
+    for (let y = gridStartY; y <= gridEndY; y += gridStep) {
+      const [, sy] = project(0, y, 0);
+      ctx.beginPath();
+      ctx.moveTo(RULER_W, sy);
+      ctx.lineTo(vw, sy);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Draw ruler backgrounds (fixed at viewport edges)
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, vh - RULER_H, vw, RULER_H); // bottom ruler
+    ctx.fillRect(0, 0, RULER_W, vh - RULER_H);  // left ruler
+
+    // Easting tick labels — pinned to bottom edge of viewport
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.font = '10px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let x = gridStartX; x <= gridEndX; x += gridStep) {
+      const [sx] = project(x, 0, 0);
+      if (sx > RULER_W + 10 && sx < vw - 20) {
+        ctx.fillText(`${(x / 1000).toFixed(0)}`, sx, vh - RULER_H + 3);
+      }
+    }
+
+    // Northing tick labels — pinned to left edge of viewport
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let y = gridStartY; y <= gridEndY; y += gridStep) {
+      const [, sy] = project(0, y, 0);
+      if (sy > 10 && sy < vh - RULER_H - 10) {
+        ctx.fillText(`${(y / 1000).toFixed(0)}`, RULER_W - 4, sy);
+      }
+    }
+
+    // Corner unit label
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '8px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('km', RULER_W / 2, vh - RULER_H / 2);
   }
 
   // Elevation ground line
@@ -207,20 +324,20 @@ function renderViewport(
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
-      ctx.font = '10px "ABC Diatype Mono", "Courier New", monospace';
+      ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('SEED', sx, sy - 10);
+      ctx.fillText('SEED', sx, sy - 12);
     }
     if (store.targetId && cache[store.targetId]) {
       const c = cache[store.targetId];
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
-      ctx.font = '10px "ABC Diatype Mono", "Courier New", monospace';
+      ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('TARGET', sx, sy - 10);
+      ctx.fillText('TARGET', sx, sy - 12);
     }
     if (store.seedId && store.targetId && cache[store.seedId] && cache[store.targetId]) {
       const s = cache[store.seedId], t = cache[store.targetId];
@@ -240,15 +357,15 @@ function renderViewport(
   // View label
   if (showLabels) {
     ctx.fillStyle = '#555';
-    ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
     const labels: Record<string, string> = {
-      plan: 'PLAN VIEW',
-      iso: 'ISOMETRIC',
+      plan: 'PLAN VIEW — ISN93 / EPSG:3057',
+      iso: 'ISOMETRIC NW',
       elev: 'ELEVATION FROM SOUTH',
     };
-    ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 8, vh - 8);
+    ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 10, vh - 10);
   }
 }
 
@@ -374,9 +491,7 @@ export function renderPlanToCanvas(canvas: HTMLCanvasElement, _phaseIndex: numbe
 
 export default function MapView() {
   const planRef = useRef<HTMLCanvasElement>(null);
-  const isoSwRef = useRef<HTMLCanvasElement>(null);
   const isoNwRef = useRef<HTMLCanvasElement>(null);
-  const elevRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<(() => void) | null>(null);
 
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number }>({
@@ -391,6 +506,9 @@ export default function MapView() {
   } = useStore();
 
   const [ready, setReady] = useState(false);
+  const [gridInfo, setGridInfo] = useState<{
+    cellCount: number; eMin: number; eMax: number; nMin: number; nMax: number;
+  } | null>(null);
 
   // Load data
   useEffect(() => {
@@ -409,6 +527,7 @@ export default function MapView() {
         const img = new Image();
         img.onload = () => {
           terrainImage = img;
+          buildClippedTerrain();
           renderRef.current?.();
         };
         img.src = '/data/terrain_hillshade.png';
@@ -429,6 +548,10 @@ export default function MapView() {
       const fitScale = Math.min(800 / dataW, 500 / dataH);
       useStore.getState().setView(cx, cy, fitScale);
 
+      setGridInfo({
+        cellCount: Object.keys(cellFile.cells).length,
+        eMin: minX, eMax: maxX, nMin: minY, nMax: maxY,
+      });
       setDataLoaded(true);
       setReady(true);
     });
@@ -464,14 +587,9 @@ export default function MapView() {
       // PLAN (main)
       renderCanvas(planRef.current, (w, h) => makePlanProject(w, h, cx, cy, scale), 'plan', true);
 
-      // ISO from SW (-45° Z, 35° X)
-      renderCanvas(isoSwRef.current, (w, h) => makeIsoProject(w, h, cx, cy, scale * 0.55, -45, 35), 'iso', false);
-
       // ISO from NW (45° Z, 35° X)
       renderCanvas(isoNwRef.current, (w, h) => makeIsoProject(w, h, cx, cy, scale * 0.55, 45, 35), 'iso', false);
 
-      // ELEVATION from south
-      renderCanvas(elevRef.current, (w, h) => makeElevProject(w, h, cx, cy, scale), 'elev', false);
     };
 
     render();
@@ -577,19 +695,24 @@ export default function MapView() {
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   };
 
+  // Compute scale bar for info panel
+  const scaleBarInfo = useCallback(() => {
+    const store = useStore.getState();
+    const s = store.viewScale;
+    // Approximate: 1 world unit = s pixels. Find a nice round distance.
+    const candidates = [500, 1000, 2000, 5000, 10000, 20000, 50000];
+    let dist = 5000;
+    for (const c of candidates) {
+      if (c * s > 40 && c * s < 200) { dist = c; break; }
+    }
+    return { dist, px: dist * s, label: dist >= 1000 ? `${dist / 1000} km` : `${dist} m` };
+  }, []);
+
+  const sb = scaleBarInfo();
+
   return (
     <div style={styles.grid}>
-      {/* Row 1: ISO SW + Elevation */}
-      <div style={styles.cell}>
-        <canvas ref={isoSwRef} {...secondaryHandlers} style={styles.canvas} />
-        <div style={styles.viewLabel}>ISO SW</div>
-      </div>
-      <div style={styles.elevCell}>
-        <canvas ref={elevRef} {...secondaryHandlers} style={styles.canvas} />
-        <div style={styles.viewLabel}>ELEVATION S</div>
-      </div>
-
-      {/* Row 2: ISO NW + Plan */}
+      {/* Row 1: ISO NW + Plan + Info */}
       <div style={styles.cell}>
         <canvas ref={isoNwRef} {...secondaryHandlers} style={styles.canvas} />
         <div style={styles.viewLabel}>ISO NW</div>
@@ -607,6 +730,38 @@ export default function MapView() {
           style={{ ...styles.canvas, cursor: pm !== 'none' ? 'crosshair' : 'grab' }}
         />
       </div>
+      <div style={styles.sideCell} />
+
+      {/* Row 2: Empty + Timeline (via overlay) + Info */}
+      <div style={styles.sideCell} />
+      <div style={styles.cell} id="timeline-cell" />
+      <div style={styles.infoCell}>
+        <div style={styles.infoContent}>
+          <div style={styles.infoSection}>PROJECTION</div>
+          <div style={styles.infoValue}>ISN93 / LAMBERT 1993</div>
+          <div style={styles.infoValue}>EPSG:3057</div>
+          <div style={styles.infoSpacer} />
+
+          <div style={styles.infoSection}>EXTENT (km)</div>
+          <div style={styles.infoValue}>
+            E {gridInfo ? `${(gridInfo.eMin / 1000).toFixed(1)} — ${(gridInfo.eMax / 1000).toFixed(1)}` : '—'}
+          </div>
+          <div style={styles.infoValue}>
+            N {gridInfo ? `${(gridInfo.nMin / 1000).toFixed(1)} — ${(gridInfo.nMax / 1000).toFixed(1)}` : '—'}
+          </div>
+          <div style={styles.infoSpacer} />
+
+          <div style={styles.infoSection}>GRID</div>
+          <div style={styles.infoValue}>500m CELLS — {gridInfo ? gridInfo.cellCount.toLocaleString() : '—'}</div>
+          <div style={styles.infoSpacer} />
+
+          <div style={styles.infoSection}>SCALE</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <div style={{ width: Math.max(20, sb.px), height: 2, background: '#F5F5F5' }} />
+            <span style={styles.infoValue}>{sb.label}</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -619,8 +774,8 @@ const styles: Record<string, React.CSSProperties> = {
     right: 0,
     bottom: 0,
     display: 'grid',
-    gridTemplateColumns: '1fr 4fr',
-    gridTemplateRows: '120px 1fr',
+    gridTemplateColumns: '2fr 13fr 2fr',
+    gridTemplateRows: '3fr 1fr',
     gap: 2,
   },
   cell: {
@@ -628,6 +783,50 @@ const styles: Record<string, React.CSSProperties> = {
     border: '0.5px solid #333',
     overflow: 'hidden',
     minHeight: 0,
+  },
+  infoCell: {
+    position: 'relative',
+    border: '0.5px solid #333',
+    overflow: 'hidden',
+    minHeight: 0,
+    background: 'rgba(0,0,0,0.95)',
+  },
+  infoContent: {
+    padding: '10px 12px',
+    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+    height: '100%',
+    overflowY: 'auto',
+  },
+  infoTitle: {
+    color: '#F5F5F5',
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: '0.1em',
+    lineHeight: '16px',
+    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+  },
+  infoSection: {
+    color: '#666',
+    fontSize: 10,
+    letterSpacing: '0.08em',
+    marginBottom: 2,
+    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+  },
+  infoValue: {
+    color: '#aaa',
+    fontSize: 11,
+    lineHeight: '15px',
+    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+  },
+  infoSpacer: {
+    height: 8,
+  },
+  sideCell: {
+    position: 'relative',
+    border: '0.5px solid #333',
+    overflow: 'hidden',
+    minHeight: 0,
+    background: 'rgba(0,0,0,0.95)',
   },
   elevCell: {
     position: 'relative',
@@ -651,10 +850,10 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute',
     bottom: 6,
     right: 8,
-    color: '#444',
-    fontSize: 9,
+    color: '#555',
+    fontSize: 11,
     fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-    letterSpacing: '0.05em',
+    letterSpacing: '0.08em',
     pointerEvents: 'none',
   },
 };

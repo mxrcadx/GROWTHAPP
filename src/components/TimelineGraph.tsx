@@ -67,7 +67,8 @@ export default function TimelineGraph() {
     const rect = canvas.getBoundingClientRect();
     const W = rect.width;
     const plotW = W - PAD_LEFT - PAD_RIGHT;
-    const plotH = HEIGHT - PAD_TOP - PAD_BOTTOM;
+    const H_metrics = canvasRef.current?.getBoundingClientRect().height ?? HEIGHT;
+    const plotH = H_metrics - PAD_TOP - PAD_BOTTOM;
     const xPos = (phase: number) => PAD_LEFT + (phase / Math.max(totalPhases - 1, 1)) * plotW;
     const yPos = (v: number) => PAD_TOP + plotH - (v / MAX_Y) * plotH;
     const phaseFromX = (x: number) => Math.round(Math.max(0, Math.min(totalPhases - 1, ((x - PAD_LEFT) / plotW) * (totalPhases - 1))));
@@ -84,11 +85,11 @@ export default function TimelineGraph() {
 
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * devicePixelRatio;
-    canvas.height = HEIGHT * devicePixelRatio;
+    canvas.height = rect.height * devicePixelRatio;
     ctx.scale(devicePixelRatio, devicePixelRatio);
 
     const W = rect.width;
-    const H = HEIGHT;
+    const H = rect.height;
     const plotW = W - PAD_LEFT - PAD_RIGHT;
     const plotH = H - PAD_TOP - PAD_BOTTOM;
 
@@ -373,6 +374,63 @@ export default function TimelineGraph() {
     }
   }, [phases, totalPhases, landCurve, floorCurve, setLandCurve, setFloorCurve, setCurrentPhase, getPlotMetrics]);
 
+  // Double-click to add a control point
+  const handleDblClick = useCallback((e: React.MouseEvent) => {
+    const m = getPlotMetrics();
+    if (!m) return;
+    const x = e.clientX - m.rect.left;
+    const y = e.clientY - m.rect.top;
+    const phase = m.phaseFromX(x);
+    const value = Math.round(m.valueFromY(y));
+
+    // Determine which curve is closer at this X position
+    const landY = m.yPos(interpolateCurve(landCurve, phase));
+    const floorY = m.yPos(interpolateCurve(floorCurve, phase));
+    const landDist = Math.abs(y - landY);
+    const floorDist = Math.abs(y - floorY);
+
+    if (landDist <= floorDist) {
+      // Add to land curve
+      const pts = [...landCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
+      setLandCurve(pts);
+    } else {
+      // Add to floor curve
+      const pts = [...floorCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
+      setFloorCurve(pts);
+    }
+  }, [landCurve, floorCurve, setLandCurve, setFloorCurve, getPlotMetrics]);
+
+  // Right-click to remove a control point (not first/last)
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const m = getPlotMetrics();
+    if (!m) return;
+    const x = e.clientX - m.rect.left;
+    const y = e.clientY - m.rect.top;
+
+    // Find closest handle
+    let bestDist = SNAP_RADIUS * 2;
+    let bestCurve: 'land' | 'floor' | null = null;
+    let bestIdx = -1;
+
+    for (let i = 1; i < landCurve.length - 1; i++) {
+      const d = Math.sqrt((x - m.xPos(landCurve[i].phase)) ** 2 + (y - m.yPos(landCurve[i].value)) ** 2);
+      if (d < bestDist) { bestDist = d; bestCurve = 'land'; bestIdx = i; }
+    }
+    for (let i = 1; i < floorCurve.length - 1; i++) {
+      const d = Math.sqrt((x - m.xPos(floorCurve[i].phase)) ** 2 + (y - m.yPos(floorCurve[i].value)) ** 2);
+      if (d < bestDist) { bestDist = d; bestCurve = 'floor'; bestIdx = i; }
+    }
+
+    if (bestCurve === 'land' && bestIdx > 0) {
+      const pts = landCurve.filter((_, i) => i !== bestIdx);
+      setLandCurve(pts);
+    } else if (bestCurve === 'floor' && bestIdx > 0) {
+      const pts = floorCurve.filter((_, i) => i !== bestIdx);
+      setFloorCurve(pts);
+    }
+  }, [landCurve, floorCurve, setLandCurve, setFloorCurve, getPlotMetrics]);
+
   return (
     <div style={styles.wrapper}>
       <canvas
@@ -382,6 +440,8 @@ export default function TimelineGraph() {
         onMouseMove={(e) => handleMouse(e)}
         onMouseUp={(e) => handleMouse(e, false)}
         onMouseLeave={(e) => handleMouse(e, false)}
+        onDoubleClick={handleDblClick}
+        onContextMenu={handleContextMenu}
       />
     </div>
   );
@@ -390,15 +450,15 @@ export default function TimelineGraph() {
 const styles: Record<string, React.CSSProperties> = {
   wrapper: {
     position: 'absolute',
-    bottom: 8,
-    left: 'calc(20% + 4px)',
-    right: 8,
-    height: HEIGHT,
+    bottom: 0,
+    left: 'calc(11.76% + 2px)',
+    right: 'calc(11.76% + 2px)',
+    top: 'calc(75% + 2px)',
     zIndex: 10,
   },
   canvas: {
     width: '100%',
-    height: HEIGHT,
+    height: '100%',
     display: 'block',
     cursor: 'crosshair',
   },
