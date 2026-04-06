@@ -64,6 +64,18 @@ interface AppState {
   playSpeed: number; // 1, 2, 4, 8
   setPlaySpeed: (v: number) => void;
 
+  // Growth parameters
+  wSuit: number;    // suitability weight
+  wProx: number;    // proximity-to-target weight
+  wAdv: number;     // advance (seed→target direction) weight
+  maxLevels: number; // max stacking levels
+  hfStacking: boolean; // cap levels by heat flux
+  setWSuit: (v: number) => void;
+  setWProx: (v: number) => void;
+  setWAdv: (v: number) => void;
+  setMaxLevels: (v: number) => void;
+  setHfStacking: (v: boolean) => void;
+
   // Shared view state (world coords)
   viewCenterX: number;
   viewCenterY: number;
@@ -110,6 +122,17 @@ export const useStore = create<AppState>((set) => ({
   setLooping: (v) => set({ looping: v }),
   playSpeed: 1,
   setPlaySpeed: (v) => set({ playSpeed: v }),
+
+  wSuit: 0.4,
+  wProx: 0.6,
+  wAdv: 0.0,
+  maxLevels: 4,
+  hfStacking: false,
+  setWSuit: (v) => set({ wSuit: v }),
+  setWProx: (v) => set({ wProx: v }),
+  setWAdv: (v) => set({ wAdv: v }),
+  setMaxLevels: (v) => set({ maxLevels: v }),
+  setHfStacking: (v) => set({ hfStacking: v }),
 
   viewCenterX: 370000,
   viewCenterY: 400000,

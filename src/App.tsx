@@ -1,5 +1,6 @@
 import MapView from './components/MapView';
 import ControlPanel from './components/ControlPanel';
+import ParameterPanel from './components/ParameterPanel';
 import TimelineGraph from './components/TimelineGraph';
 import { useStore } from './store';
 
@@ -10,6 +11,7 @@ export default function App() {
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#000' }}>
       <MapView />
       <ControlPanel />
+      <ParameterPanel />
       <TimelineGraph />
 
       {placementMode !== 'none' && (

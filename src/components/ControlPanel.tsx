@@ -19,6 +19,7 @@ export default function ControlPanel() {
     currentPhase, phases, setPhases, setCurrentPhase,
     simulating, setSimulating,
     playing, setPlaying, looping, setLooping, playSpeed, setPlaySpeed,
+    wSuit, wProx, wAdv, maxLevels, hfStacking,
   } = useStore();
 
   const workerRef = useRef<Worker | null>(null);
@@ -43,12 +44,12 @@ export default function ControlPanel() {
     return () => w.terminate();
   }, []);
 
-  // Auto-run simulation when seed+target are set, or curves change
+  // Auto-run simulation when seed+target are set, or any param changes
   useEffect(() => {
     if (seedId && targetId && dataLoaded && !simulating) {
       runSimulation();
     }
-  }, [seedId, targetId, landCurve, floorCurve, totalPhases]);
+  }, [seedId, targetId, landCurve, floorCurve, totalPhases, wSuit, wProx, wAdv, maxLevels, hfStacking]);
 
   const runSimulation = useCallback(() => {
     const cells = getCellData();
@@ -56,6 +57,7 @@ export default function ControlPanel() {
     if (!cells || !adj || !seedId || !targetId || !workerRef.current) return;
 
     setSimulating(true);
+    const store = useStore.getState();
     workerRef.current.postMessage({
       cells,
       adjacency: adj,
@@ -64,8 +66,13 @@ export default function ControlPanel() {
       totalPhases,
       landCurve,
       floorCurve,
+      wSuit: store.wSuit,
+      wProx: store.wProx,
+      wAdv: store.wAdv,
+      maxLevels: store.maxLevels,
+      hfStacking: store.hfStacking,
     });
-  }, [seedId, targetId, totalPhases, landCurve, floorCurve]);
+  }, [seedId, targetId, totalPhases, landCurve, floorCurve, wSuit, wProx, wAdv, maxLevels, hfStacking]);
 
   // Animation loop
   useEffect(() => {
