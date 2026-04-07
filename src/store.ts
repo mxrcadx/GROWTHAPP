@@ -5,12 +5,11 @@ import type { PlacementMode, PhaseSnapshot, CurvePoint, ColorTheme } from './typ
 function defaultTerritoryCurve(totalPhases: number): CurvePoint[] {
   return [
     { phase: 0, value: 0 },
-    { phase: Math.round(totalPhases * 0.1), value: 20 },
-    { phase: Math.round(totalPhases * 0.25), value: 80 },
-    { phase: Math.round(totalPhases * 0.5), value: 200 },
+    { phase: Math.round(totalPhases * 0.15), value: 40 },
+    { phase: Math.round(totalPhases * 0.35), value: 150 },
+    { phase: Math.round(totalPhases * 0.55), value: 280 },
     { phase: Math.round(totalPhases * 0.75), value: 300 },
-    { phase: Math.round(totalPhases * 0.85), value: 250 },
-    { phase: Math.round(totalPhases * 0.95), value: 120 },
+    { phase: Math.round(totalPhases * 0.9), value: 180 },
     { phase: totalPhases - 1, value: 80 },
   ];
 }
@@ -18,12 +17,11 @@ function defaultTerritoryCurve(totalPhases: number): CurvePoint[] {
 function defaultComputeCurve(totalPhases: number): CurvePoint[] {
   return [
     { phase: 0, value: 0 },
-    { phase: Math.round(totalPhases * 0.1), value: 10 },
-    { phase: Math.round(totalPhases * 0.25), value: 50 },
-    { phase: Math.round(totalPhases * 0.5), value: 180 },
+    { phase: Math.round(totalPhases * 0.15), value: 25 },
+    { phase: Math.round(totalPhases * 0.35), value: 120 },
+    { phase: Math.round(totalPhases * 0.55), value: 300 },
     { phase: Math.round(totalPhases * 0.75), value: 450 },
-    { phase: Math.round(totalPhases * 0.85), value: 380 },
-    { phase: Math.round(totalPhases * 0.95), value: 200 },
+    { phase: Math.round(totalPhases * 0.9), value: 280 },
     { phase: totalPhases - 1, value: 120 },
   ];
 }
@@ -137,7 +135,7 @@ export const useStore = create<AppState>((set) => ({
   setPlaying: (v) => set({ playing: v }),
   looping: true,
   setLooping: (v) => set({ looping: v }),
-  playSpeed: 5,
+  playSpeed: 6,
   setPlaySpeed: (v) => set({ playSpeed: v }),
   phaseBlend: 0,
   setPhaseBlend: (v) => set({ phaseBlend: v }),
@@ -156,7 +154,7 @@ export const useStore = create<AppState>((set) => ({
   colorTheme: 'age',
   setColorTheme: (t) => set({ colorTheme: t }),
 
-  rightPanelOpen: true,
+  rightPanelOpen: false,
   setRightPanelOpen: (v) => set({ rightPanelOpen: v }),
 
   algorithmLog: [],
@@ -165,8 +163,8 @@ export const useStore = create<AppState>((set) => ({
   })),
   clearLog: () => set({ algorithmLog: [] }),
 
-  viewCenterX: 365000,
-  viewCenterY: 400000,
-  viewScale: 0.007,
+  viewCenterX: 354125,
+  viewCenterY: 389000,
+  viewScale: 0.021263,
   setView: (cx, cy, scale) => set({ viewCenterX: cx, viewCenterY: cy, viewScale: scale }),
 }));

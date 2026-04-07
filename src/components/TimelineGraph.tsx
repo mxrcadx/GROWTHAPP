@@ -51,13 +51,16 @@ function interpolateCurve(points: CurvePoint[], phase: number): number {
 export default function TimelineGraph() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragTarget = useRef<DragTarget>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
-  const {
-    phases, currentPhase, setCurrentPhase,
-    totalPhases, territoryCurve, computeCurve,
-    setTerritoryCurve, setComputeCurve,
-  } = useStore();
+  const phases = useStore(s => s.phases);
+  const currentPhase = useStore(s => s.currentPhase);
+  const setCurrentPhase = useStore(s => s.setCurrentPhase);
+  const totalPhases = useStore(s => s.totalPhases);
+  const territoryCurve = useStore(s => s.territoryCurve);
+  const computeCurve = useStore(s => s.computeCurve);
+  const setTerritoryCurve = useStore(s => s.setTerritoryCurve);
+  const setComputeCurve = useStore(s => s.setComputeCurve);
 
   const getPlotMetrics = useCallback(() => {
     const canvas = canvasRef.current;
@@ -94,13 +97,15 @@ export default function TimelineGraph() {
     const xPos = (phase: number) => PAD_LEFT + (phase / Math.max(totalPhases - 1, 1)) * plotW;
     const yPos = (v: number) => PAD_TOP + plotH - (v / MAX_Y) * plotH;
 
-    // Background — 5% grey with rounded corners
-    ctx.fillStyle = 'rgba(13,13,13,0.95)';
+    // Background — transparent so backdrop-filter inversion shows through
+    ctx.clearRect(0, 0, W, H);
     const br = 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.beginPath();
     ctx.roundRect(0, 0, W, H, br);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     ctx.roundRect(0, 0, W, H, br);
@@ -137,7 +142,7 @@ export default function TimelineGraph() {
     ctx.fillStyle = '#999';
     ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
     ctx.textAlign = 'right';
-    ctx.fillText('km²', PAD_LEFT - 8, PAD_TOP - 4);
+    ctx.fillText('km\u00B2', PAD_LEFT - 8, PAD_TOP - 4);
     ctx.textAlign = 'center';
     ctx.fillText('PHASES', (PAD_LEFT + W - PAD_RIGHT) / 2, H - 6);
 
@@ -156,19 +161,24 @@ export default function TimelineGraph() {
       ctx.fillText(`${i}`, x, H - PAD_BOTTOM + 14);
     }
 
+    // Sample curves at pixel resolution
+    const sampleStep = Math.max(1, Math.floor(totalPhases / plotW * 2));
+
     // Filled area between compute and territory curves (stacking region)
     ctx.beginPath();
-    for (let px = 0; px <= totalPhases - 1; px++) {
+    for (let px = 0; px <= totalPhases - 1; px += sampleStep) {
       const x = xPos(px);
       const y = yPos(interpolateCurve(computeCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-    for (let px = totalPhases - 1; px >= 0; px--) {
+    { const x = xPos(totalPhases - 1); ctx.lineTo(x, yPos(interpolateCurve(computeCurve, totalPhases - 1))); }
+    for (let px = totalPhases - 1; px >= 0; px -= sampleStep) {
       const x = xPos(px);
       const y = yPos(interpolateCurve(territoryCurve, px));
       ctx.lineTo(x, y);
     }
+    { const x = xPos(0); ctx.lineTo(x, yPos(interpolateCurve(territoryCurve, 0))); }
     ctx.closePath();
     ctx.fillStyle = 'rgba(57, 255, 20, 0.06)';
     ctx.fill();
@@ -177,24 +187,26 @@ export default function TimelineGraph() {
     ctx.strokeStyle = '#F5F5F5';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
-    for (let px = 0; px <= totalPhases - 1; px++) {
+    for (let px = 0; px <= totalPhases - 1; px += sampleStep) {
       const x = xPos(px);
       const y = yPos(interpolateCurve(computeCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
+    { const x = xPos(totalPhases - 1); ctx.lineTo(x, yPos(interpolateCurve(computeCurve, totalPhases - 1))); }
     ctx.stroke();
 
     // Draw TERRITORY interpolated curve
     ctx.strokeStyle = '#39FF14';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    for (let px = 0; px <= totalPhases - 1; px++) {
+    for (let px = 0; px <= totalPhases - 1; px += sampleStep) {
       const x = xPos(px);
       const y = yPos(interpolateCurve(territoryCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
+    { const x = xPos(totalPhases - 1); ctx.lineTo(x, yPos(interpolateCurve(territoryCurve, totalPhases - 1))); }
     ctx.stroke();
 
     // Actual simulation results — thin dotted lines
@@ -249,10 +261,10 @@ export default function TimelineGraph() {
       ctx.stroke();
     }
 
-    // Scrubber line
-    if (phases.length > 0) {
+    // Scrubber line — always visible for previewing position
+    {
       const scrubX = xPos(currentPhase);
-      ctx.strokeStyle = '#F5F5F5';
+      ctx.strokeStyle = phases.length > 0 ? '#F5F5F5' : 'rgba(255,255,255,0.3)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
@@ -260,30 +272,32 @@ export default function TimelineGraph() {
       ctx.lineTo(scrubX, H - PAD_BOTTOM);
       ctx.stroke();
 
-      ctx.fillStyle = '#F5F5F5';
+      ctx.fillStyle = phases.length > 0 ? '#F5F5F5' : 'rgba(255,255,255,0.3)';
       ctx.fillRect(scrubX - 4, H - PAD_BOTTOM - 2, 8, 6);
 
-      if (phases[currentPhase]) {
-        ctx.fillStyle = '#F5F5F5';
-        ctx.textAlign = 'left';
-        ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
+      ctx.fillStyle = phases.length > 0 ? '#F5F5F5' : 'rgba(255,255,255,0.4)';
+      ctx.textAlign = 'left';
+      ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
+      if (phases.length > 0 && phases[currentPhase]) {
         const p = phases[currentPhase];
         ctx.fillText(
-          `P${currentPhase}  TERRITORY: ${p.landArea.toFixed(1)} km²  COMPUTE: ${p.floorSpace.toFixed(1)} km²`,
+          `P${currentPhase}  TERRITORY: ${p.landArea.toFixed(1)} km\u00B2  COMPUTE: ${p.floorSpace.toFixed(1)} km\u00B2`,
           PAD_LEFT + 4, PAD_TOP - 8
         );
+      } else {
+        ctx.fillText(`P${currentPhase}`, PAD_LEFT + 4, PAD_TOP - 8);
       }
     }
 
-    // Legend
-    ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
-    ctx.textAlign = 'right';
+    // Legend — top left (ABC Diatype Regular, not Mono)
+    ctx.font = '9px "ABC Diatype", "Helvetica Neue", sans-serif';
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#39FF14';
-    ctx.fillText('TERRITORY', W - PAD_RIGHT - 4, PAD_TOP + 10);
+    ctx.fillText('TERRITORY', 12, 14);
     ctx.fillStyle = '#F5F5F5';
-    ctx.fillText('COMPUTE', W - PAD_RIGHT - 4, PAD_TOP + 22);
+    ctx.fillText('COMPUTE', 12, 26);
 
-  }, [phases, currentPhase, totalPhases, territoryCurve, computeCurve]);
+  }, [phases, currentPhase, totalPhases, territoryCurve, computeCurve, collapsed]);
 
   // Mouse interaction
   const handleMouse = useCallback((e: React.MouseEvent, down?: boolean) => {
@@ -316,7 +330,7 @@ export default function TimelineGraph() {
         if (d < bestDist) { bestDist = d; best = { type: 'compute', index: i }; }
       }
 
-      if (!best && phases.length > 0) {
+      if (!best) {
         best = { type: 'scrubber' };
       }
 
@@ -327,9 +341,11 @@ export default function TimelineGraph() {
     if (!target) return;
 
     if (target.type === 'scrubber') {
-      if (phases.length === 0) return;
+      const store = useStore.getState();
+      if (store.playing) store.setPlaying(false);
       const ratio = Math.max(0, Math.min(1, (x - PAD_LEFT) / m.plotW));
-      setCurrentPhase(Math.round(ratio * (phases.length - 1)));
+      const maxPhase = phases.length > 0 ? phases.length - 1 : totalPhases - 1;
+      setCurrentPhase(Math.round(ratio * maxPhase));
       return;
     }
 
@@ -419,14 +435,16 @@ export default function TimelineGraph() {
   if (collapsed) {
     return (
       <button onClick={() => setCollapsed(false)} style={styles.collapseBtn}>
-        ▴ CURVES
+        {'\u25B4'} CURVES
       </button>
     );
   }
 
   return (
     <div style={styles.wrapper}>
-      <button onClick={() => setCollapsed(true)} style={styles.hideBtn}>▾</button>
+      {/* Backdrop invert layer — only inverts map behind, not content */}
+      <div style={styles.backdrop} />
+      <button onClick={() => setCollapsed(true)} style={styles.hideBtn}>{'\u25BE'}</button>
       <canvas
         ref={canvasRef}
         style={styles.canvas}
@@ -447,14 +465,25 @@ const styles: Record<string, React.CSSProperties> = {
     bottom: 8,
     left: 360,
     right: 320,
-    height: 200,
+    height: 300,
     zIndex: 10,
   },
+  backdrop: {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 8,
+    backdropFilter: 'invert(0.12) brightness(0.4)',
+    WebkitBackdropFilter: 'invert(0.12) brightness(0.4)',
+    pointerEvents: 'none',
+    zIndex: 0,
+  } as React.CSSProperties,
   canvas: {
+    position: 'relative',
     width: '100%',
     height: '100%',
     display: 'block',
     cursor: 'crosshair',
+    zIndex: 1,
   },
   collapseBtn: {
     position: 'absolute',
@@ -477,9 +506,10 @@ const styles: Record<string, React.CSSProperties> = {
     top: 4,
     right: 8,
     zIndex: 11,
-    background: 'transparent',
-    border: 'none',
-    color: '#555',
+    background: 'rgba(0,0,0,0.5)',
+    border: '0.5px solid rgba(255,255,255,0.15)',
+    borderRadius: 3,
+    color: '#999',
     fontSize: 12,
     cursor: 'pointer',
     padding: '2px 6px',

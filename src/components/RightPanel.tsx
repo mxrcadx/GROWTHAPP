@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useStore } from '../store';
 import { getCellData } from './MapView';
+import PlayButton from './PlayButton';
 import { exportPhaseDXF, downloadDXF } from '../utils/dxf';
 import { exportPythonScript, downloadPythonScript } from '../utils/exportPython';
 import { exportFrameSequence, DEFAULT_EXPORT_CONFIG } from '../utils/exportFrames';
@@ -98,8 +99,11 @@ export default function RightPanel() {
       </button>
 
       {/* Growth Profile */}
-      <div style={styles.section}>
-        <div style={styles.sectionTitle}>GROWTH PROFILE</div>
+      <div style={{ ...styles.section, position: 'relative' as const }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ ...styles.sectionTitle, marginBottom: 0 }}>GROWTH PROFILE</div>
+          <PlayButton inline />
+        </div>
         <div style={styles.statusText}>
           {!dataLoaded ? 'LOADING DATA...' :
            placementMode === 'seed' ? 'CLICK MAP TO PLACE SEED' :

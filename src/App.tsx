@@ -3,10 +3,12 @@ import ControlPanel from './components/ControlPanel';
 import TimelineGraph from './components/TimelineGraph';
 import AlgorithmLog from './components/AlgorithmLog';
 import RightPanel from './components/RightPanel';
+import { SimEngine } from './components/PlayButton';
 
 export default function App() {
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#000', overflow: 'hidden' }}>
+      <SimEngine />
       <MapView />
       <ControlPanel />
       <AlgorithmLog />

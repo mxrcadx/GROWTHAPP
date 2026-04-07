@@ -274,12 +274,9 @@ function renderViewport(
 
       const [sx, sy] = project(c.cx, c.cy, 0);
       if (sx + cellPx * 2 < 0 || sx - cellPx * 2 > vw || sy + cellPx * 2 < 0 || sy - cellPx * 2 > vh) continue;
-      ctx.shadowColor = `rgb(${r},${g},${b})`;
-      ctx.shadowBlur = 6 * cellAlpha;
       ctx.fillStyle = `rgba(${r},${g},${b},${baseAlpha.toFixed(3)})`;
       ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 60)},${Math.min(255, b + 60)},${(0.5 * cellAlpha).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 60)},${Math.min(255, b + 60)},${(0.3 * cellAlpha).toFixed(3)})`;
       ctx.lineWidth = 0.5;
       ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
       if (levels > 1 && cellAlpha > 0.5) {
@@ -358,12 +355,21 @@ export default function MapView() {
     dragging: false, lastX: 0, lastY: 0,
   });
 
-  const {
-    setDataLoaded, placementMode, setPlacementMode,
-    seedId, targetId, setSeedId, setTargetId,
-    currentPhase, phases, colorTheme, playing,
-    viewCenterX, viewCenterY, viewScale, setView,
-  } = useStore();
+  // Only subscribe to fields that affect React rendering decisions (not canvas rendering)
+  const setDataLoaded = useStore(s => s.setDataLoaded);
+  const setSeedId = useStore(s => s.setSeedId);
+  const setTargetId = useStore(s => s.setTargetId);
+  const setPlacementMode = useStore(s => s.setPlacementMode);
+  const playing = useStore(s => s.playing);
+  // These trigger static re-render when not playing
+  const currentPhase = useStore(s => s.currentPhase);
+  const seedId = useStore(s => s.seedId);
+  const targetId = useStore(s => s.targetId);
+  const phases = useStore(s => s.phases);
+  const colorTheme = useStore(s => s.colorTheme);
+  const viewCenterX = useStore(s => s.viewCenterX);
+  const viewCenterY = useStore(s => s.viewCenterY);
+  const viewScale = useStore(s => s.viewScale);
 
   const [ready, setReady] = useState(false);
   const [gridInfo, setGridInfo] = useState<{
