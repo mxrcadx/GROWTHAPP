@@ -16,13 +16,19 @@ interface WorkerInput {
   seedId: string;
   targetId: string;
   totalPhases: number;
-  landCurve: CurvePoint[];
-  floorCurve: CurvePoint[];
+  landCurve: CurvePoint[];   // territory curve (km²)
+  floorCurve: CurvePoint[];  // compute curve (km²)
   wSuit: number;
   wProx: number;
   wAdv: number;
   maxLevels: number;
   hfStacking: boolean;
+}
+
+interface LogEntry {
+  phase: number;
+  action: string;
+  details: string[];
 }
 
 const CELL_AREA_KM2 = 0.25; // 500m grid: 0.5km × 0.5km = 0.25 km²
@@ -115,14 +121,13 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
   const advance: Record<string, number> = {};
   for (const [id, c] of Object.entries(cells)) {
     proximity[id] = maxDistTarget > 0 ? 1 - distToTarget[id] / maxDistTarget : 1;
-    // Advance = projection onto seed→target axis, normalized 0–1
     const dx = c.cx - seedCell.cx;
     const dy = c.cy - seedCell.cy;
     const proj = dx * axisNX + dy * axisNY;
     advance[id] = axisDist > 0 ? Math.max(0, Math.min(1, proj / axisDist)) : 0;
   }
 
-  // Normalize weights so they sum to 1
+  // Normalize weights
   const wTotal = wSuit + wProx + wAdv;
   const nSuit = wTotal > 0 ? wSuit / wTotal : 0.33;
   const nProx = wTotal > 0 ? wProx / wTotal : 0.33;
@@ -134,7 +139,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     expansionScore[id] = c.suit * nSuit + proximity[id] * nProx + advance[id] * nAdv;
   }
 
-  // Precompute neighbor counts for shedding
+  // Precompute neighbor counts
   const neighborCount: Record<string, number> = {};
   for (const [id, nbs] of Object.entries(adjacency)) {
     neighborCount[id] = nbs ? nbs.length : 0;
@@ -142,17 +147,22 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
 
   // State
   const occupied = new Map<string, number>(); // cellId -> age
+  const decayed = new Set<string>();
   const cellLevels = new Map<string, number>();
   occupied.set(seedId, 0);
 
   const phases = [];
+  const logEntries: LogEntry[] = [];
 
   for (let phase = 0; phase < totalPhases; phase++) {
     const targetLandArea = interpolateCurve(landCurve, phase);
     const targetFloorSpace = interpolateCurve(floorCurve, phase);
     const targetCells = Math.max(1, Math.round(targetLandArea / CELL_AREA_KM2));
 
+    const phaseLog: string[] = [];
+
     // GROW: add frontier cells
+    let grew = 0;
     if (targetCells > occupied.size) {
       const needed = targetCells - occupied.size;
       const frontier: string[] = [];
@@ -161,7 +171,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
         const nbs = adjacency[occId];
         if (!nbs) continue;
         for (const nb of nbs) {
-          if (!occupied.has(nb) && !frontierSet.has(nb) && cells[nb]) {
+          if (!occupied.has(nb) && !frontierSet.has(nb) && !decayed.has(nb) && cells[nb]) {
             frontier.push(nb);
             frontierSet.add(nb);
           }
@@ -172,21 +182,39 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
       for (let i = 0; i < toAdd; i++) {
         occupied.set(frontier[i], 0);
       }
+      grew = toAdd;
+      if (toAdd > 0) {
+        const best = frontier[0];
+        const bc = cells[best];
+        phaseLog.push(`GROW +${toAdd} cells | frontier: ${frontier.length}`);
+        phaseLog.push(`  best: ${best} suit=${bc.suit.toFixed(2)} hf=${bc.hf.toFixed(0)}W/m²`);
+        phaseLog.push(`  src: geothermal_suitability_500m, ork_heatflux_2020`);
+      }
     }
 
-    // SHED: remove lowest-value cells (suitability + connectivity)
+    // SHED via territory curve contraction
+    let shedFromCurve = 0;
     if (targetCells < occupied.size) {
-      const toRemove = occupied.size - targetCells;
+      const maxShedPerPhase = Math.max(1, Math.ceil(occupied.size * 0.05));
+      const toRemove = Math.min(occupied.size - targetCells, maxShedPerPhase);
       const maxNbCount = Math.max(1, ...Object.values(neighborCount));
+      const maxAge = Math.max(1, ...occupied.values());
       const sorted = [...occupied.keys()].sort((a, b) => {
-        // Score: higher = more worth keeping. Shed lowest first.
-        const sa = cells[a].suit + (neighborCount[a] || 0) / maxNbCount;
-        const sb = cells[b].suit + (neighborCount[b] || 0) / maxNbCount;
-        return sa - sb; // ascending: lowest value first to shed
+        const ageA = (occupied.get(a) || 0) / maxAge;
+        const ageB = (occupied.get(b) || 0) / maxAge;
+        const sa = cells[a].suit + (neighborCount[a] || 0) / maxNbCount + ageA * 0.5;
+        const sb = cells[b].suit + (neighborCount[b] || 0) / maxNbCount + ageB * 0.5;
+        return sa - sb;
       });
       for (let i = 0; i < toRemove; i++) {
         occupied.delete(sorted[i]);
+        decayed.add(sorted[i]);
       }
+      shedFromCurve = toRemove;
+    }
+
+    if (shedFromCurve > 0) {
+      phaseLog.push(`SHED -${shedFromCurve} cells | blacklisted: ${decayed.size}`);
     }
 
     // AGE all cells
@@ -199,18 +227,20 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     const currentLandArea = occupied.size * CELL_AREA_KM2;
 
     if (occupied.size > 0) {
-      const sortedByProximity = [...occupied.keys()].sort(
-        (a, b) => distToTarget[a] - distToTarget[b]
-      );
+      const maxAge = Math.max(1, ...occupied.values());
+      const sortedByDevelopment = [...occupied.keys()].sort((a, b) => {
+        const scoreA = (occupied.get(a) || 0) / maxAge * 0.6 + cells[a].suit * 0.4;
+        const scoreB = (occupied.get(b) || 0) / maxAge * 0.6 + cells[b].suit * 0.4;
+        return scoreB - scoreA;
+      });
 
       if (targetFloorSpace >= currentLandArea) {
-        // STACKING: all cells get level 1, add extras near target
         for (const id of occupied.keys()) cellLevels.set(id, 1);
         const neededExtra = targetFloorSpace - currentLandArea;
         let added = 0;
-        const levelCap = maxLevels - 1; // already have 1
+        const levelCap = maxLevels - 1;
         for (let extraLevel = 1; extraLevel <= levelCap && added < neededExtra; extraLevel++) {
-          for (const id of sortedByProximity) {
+          for (const id of sortedByDevelopment) {
             if (added >= neededExtra) break;
             const current = cellLevels.get(id) || 1;
             const cellMax = hfStacking ? hfMaxLevels(cells[id].hf, maxLevels) : maxLevels;
@@ -220,11 +250,13 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
             }
           }
         }
+        if (neededExtra > 0) {
+          phaseLog.push(`STACK +${(neededExtra).toFixed(1)}km² compute | src: ork_heatflux_2020`);
+        }
       } else {
-        // SPARSE: only some cells are programmed (level 1)
         const programmedCount = Math.max(1, Math.round(targetFloorSpace / CELL_AREA_KM2));
-        for (let i = 0; i < sortedByProximity.length; i++) {
-          cellLevels.set(sortedByProximity[i], i < programmedCount ? 1 : 0);
+        for (let i = 0; i < sortedByDevelopment.length; i++) {
+          cellLevels.set(sortedByDevelopment[i], i < programmedCount ? 1 : 0);
         }
       }
     }
@@ -244,10 +276,14 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
       floorSpace: Math.round(floorSpace * 10) / 10,
     });
 
+    if (phaseLog.length > 0) {
+      logEntries.push({ phase, action: grew > 0 ? 'GROW' : 'SHED', details: phaseLog });
+    }
+
     if (phase % 10 === 0) {
       self.postMessage({ progress: phase, total: totalPhases });
     }
   }
 
-  self.postMessage({ result: { phases, totalPhases } });
+  self.postMessage({ result: { phases, totalPhases }, log: logEntries });
 };

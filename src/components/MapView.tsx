@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useStore } from '../store';
-import { ageColor } from '../utils/colors';
-import type { CellData, GrowthCellDataFile, GrowthAdjacencyFile } from '../types';
+import { themeColor } from '../utils/colors';
+import type { CellData, GrowthCellDataFile, GrowthAdjacencyFile, ColorTheme } from '../types';
 
 // Module-level data cache
 let cellDataCache: Record<string, CellData> | null = null;
@@ -9,25 +9,29 @@ let adjacencyCache: Record<string, string[]> | null = null;
 let coastlineData: { lines: [number, number][][] } | null = null;
 let terrainImage: HTMLImageElement | null = null;
 let terrainMeta: { left: number; bottom: number; right: number; top: number } | null = null;
-let clippedTerrainCanvas: HTMLCanvasElement | null = null; // ocean-clipped terrain
+let clippedTerrainCanvas: HTMLCanvasElement | null = null;
+let icelandImage: HTMLImageElement | null = null;
+let icelandMeta: { left: number; bottom: number; right: number; top: number } | null = null;
 
 export function getCellData() { return cellDataCache; }
 export function getAdjacency() { return adjacencyCache; }
 
+// Module-level blend value — written by animation loop, read by renderer (avoids 60 store writes/sec)
+let _phaseBlend = 0;
+export function setPhaseBlendDirect(v: number) { _phaseBlend = v; }
+export function getPhaseBlend() { return _phaseBlend; }
+
 // Coordinate bounds
 let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
-// Projection types
 type ProjectFn = (wx: number, wy: number, wz: number) => [number, number];
 
-const HALF = 250; // half cell size in world units (500m grid)
-const GAP = 10; // 10m inset per side = 20m gap between cells
-const DRAW_HALF = HALF - GAP; // rendered half-size with gap
-const LEVEL_H = 1000; // extrusion height per level in world units
+const HALF = 250;
+const GAP = 10;
+const DRAW_HALF = HALF - GAP;
 
 // ====================== COASTLINE CLIP ======================
 
-/** Pre-render terrain clipped to coastline boundary (removes grey ocean) */
 function buildClippedTerrain() {
   if (!terrainImage || !terrainMeta || !coastlineData) return;
   const cw = terrainImage.width;
@@ -37,12 +41,10 @@ function buildClippedTerrain() {
   offCanvas.height = ch;
   const ctx = offCanvas.getContext('2d')!;
 
-  // Map world coords to pixel coords in the terrain image
   const m = terrainMeta;
   const toPixX = (wx: number) => ((wx - m.left) / (m.right - m.left)) * cw;
   const toPixY = (wy: number) => ((m.top - wy) / (m.top - m.bottom)) * ch;
 
-  // Build clip path from coastline polygons
   ctx.beginPath();
   for (const line of coastlineData.lines) {
     if (line.length < 3) continue;
@@ -58,32 +60,12 @@ function buildClippedTerrain() {
   clippedTerrainCanvas = offCanvas;
 }
 
-// ====================== PROJECTION FUNCTIONS ======================
+// ====================== PROJECTION ======================
 
 function makePlanProject(vw: number, vh: number, cx: number, cy: number, scale: number): ProjectFn {
   const ox = vw / 2 - cx * scale;
   const oy = vh / 2 + cy * scale;
   return (wx, wy, _wz) => [wx * scale + ox, -wy * scale + oy];
-}
-
-function makeIsoProject(
-  vw: number, vh: number, cx: number, cy: number, scale: number,
-  rotZDeg: number, rotXDeg: number,
-): ProjectFn {
-  const rotZ = rotZDeg * Math.PI / 180;
-  const rotX = rotXDeg * Math.PI / 180;
-  const cosZ = Math.cos(rotZ), sinZ = Math.sin(rotZ);
-  const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
-  const screenCX = vw / 2;
-  const screenCY = vh / 2;
-  return (wx, wy, wz) => {
-    const x = wx - cx;
-    const y = wy - cy;
-    const x1 = x * cosZ - y * sinZ;
-    const y1 = x * sinZ + y * cosZ;
-    const y2 = y1 * cosX - wz * sinX;
-    return [x1 * scale + screenCX, -y2 * scale + screenCY];
-  };
 }
 
 // ====================== RENDER ENGINE ======================
@@ -92,16 +74,19 @@ function renderViewport(
   ctx: CanvasRenderingContext2D,
   vw: number, vh: number,
   project: ProjectFn,
-  mode: 'plan' | 'iso',
   showTerrain: boolean,
   transparentBg: boolean = false,
   showLabels: boolean = true,
+  colorTheme: ColorTheme = 'age',
 ) {
   if (!cellDataCache) return;
 
   const store = useStore.getState();
   const snapshot = store.phases.length > 0 && store.currentPhase < store.phases.length
     ? store.phases[store.currentPhase] : null;
+  const nextSnapshot = store.phases.length > 0 && store.currentPhase + 1 < store.phases.length
+    ? store.phases[store.currentPhase + 1] : null;
+  const blend = _phaseBlend; // 0-1 fractional interpolation (set directly by animation loop)
   const maxAge = store.currentPhase;
   const scale = store.viewScale;
   const cellPx = DRAW_HALF * scale;
@@ -114,8 +99,17 @@ function renderViewport(
     ctx.fillRect(0, 0, vw, vh);
   }
 
-  // Terrain (plan only) — use clipped version to remove ocean
-  if (showTerrain && terrainMeta && mode === 'plan') {
+  // Full-Iceland terrain (dim background layer)
+  if (icelandImage && icelandMeta) {
+    const [tlx, tly] = project(icelandMeta.left, icelandMeta.top, 0);
+    const [brx, bry] = project(icelandMeta.right, icelandMeta.bottom, 0);
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(icelandImage, tlx, tly, brx - tlx, bry - tly);
+    ctx.globalAlpha = 1.0;
+  }
+
+  // Study area terrain (bright, clipped)
+  if (showTerrain && terrainMeta) {
     const src = clippedTerrainCanvas || terrainImage;
     if (src) {
       const [tlx, tly] = project(terrainMeta.left, terrainMeta.top, 0);
@@ -126,8 +120,8 @@ function renderViewport(
 
   // Coastline
   if (coastlineData) {
-    ctx.strokeStyle = mode === 'plan' ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = mode === 'plan' ? 1.2 : 0.8;
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1.2;
     for (const line of coastlineData.lines) {
       if (line.length < 2) continue;
       ctx.beginPath();
@@ -141,16 +135,14 @@ function renderViewport(
     }
   }
 
-  // Coordinate grid (plan view) — grid lines move with map, labels pinned to viewport edges
-  if (mode === 'plan') {
-    // Choose grid step based on zoom: pick the largest step that gives ≥80px spacing
+  // Coordinate grid — grid lines move with map, labels pinned to viewport edges
+  {
     const stepCandidates = [1000, 2000, 5000, 10000, 20000, 50000];
     let gridStep = stepCandidates[stepCandidates.length - 1];
     for (const s of stepCandidates) {
       if (s * scale >= 80) { gridStep = s; break; }
     }
 
-    // Determine visible world extent from viewport edges
     const ox = vw / 2 - store.viewCenterX * scale;
     const oy = vh / 2 + store.viewCenterY * scale;
     const visMinWX = (0 - ox) / scale;
@@ -163,10 +155,10 @@ function renderViewport(
     const gridStartY = Math.floor(visMinWY / gridStep) * gridStep;
     const gridEndY = Math.ceil(visMaxWY / gridStep) * gridStep;
 
-    const RULER_W = 50; // left ruler width for northing labels
-    const RULER_H = 16; // bottom ruler height for easting labels
+    const RULER_H = 16; // bottom ruler
+    const RULER_W = 50; // right ruler (moved from left to right per Figma)
 
-    // Draw grid lines (move with map)
+    // Grid lines
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 0.5;
     ctx.setLineDash([4, 8]);
@@ -174,129 +166,140 @@ function renderViewport(
       const [sx] = project(x, 0, 0);
       ctx.beginPath();
       ctx.moveTo(sx, 0);
-      ctx.lineTo(sx, vh - RULER_H);
+      ctx.lineTo(sx, vh);
       ctx.stroke();
     }
     for (let y = gridStartY; y <= gridEndY; y += gridStep) {
       const [, sy] = project(0, y, 0);
       ctx.beginPath();
-      ctx.moveTo(RULER_W, sy);
+      ctx.moveTo(0, sy);
       ctx.lineTo(vw, sy);
       ctx.stroke();
     }
     ctx.setLineDash([]);
 
-    // Draw ruler backgrounds (fixed at viewport edges)
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(0, vh - RULER_H, vw, RULER_H); // bottom ruler
-    ctx.fillRect(0, 0, RULER_W, vh - RULER_H);  // left ruler
+    // Ruler backgrounds — top edge for easting, right edge for northing
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, vw, RULER_H); // top ruler
+    ctx.fillRect(vw - RULER_W, RULER_H, RULER_W, vh - RULER_H); // right ruler
 
-    // Easting tick labels — pinned to bottom edge of viewport
+    // Easting labels — pinned to top edge
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.font = '10px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.font = '10px "ABC Diatype", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     for (let x = gridStartX; x <= gridEndX; x += gridStep) {
       const [sx] = project(x, 0, 0);
-      if (sx > RULER_W + 10 && sx < vw - 20) {
-        ctx.fillText(`${(x / 1000).toFixed(0)}`, sx, vh - RULER_H + 3);
+      if (sx > 10 && sx < vw - RULER_W - 10) {
+        ctx.fillText(`${(x / 1000).toFixed(0)}`, sx, 3);
       }
     }
 
-    // Northing tick labels — pinned to left edge of viewport
-    ctx.textAlign = 'right';
+    // Northing labels — pinned to right edge
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     for (let y = gridStartY; y <= gridEndY; y += gridStep) {
       const [, sy] = project(0, y, 0);
-      if (sy > 10 && sy < vh - RULER_H - 10) {
-        ctx.fillText(`${(y / 1000).toFixed(0)}`, RULER_W - 4, sy);
+      if (sy > RULER_H + 10 && sy < vh - 10) {
+        ctx.fillText(`${(y / 1000).toFixed(0)}`, vw - RULER_W + 6, sy);
       }
     }
 
     // Corner unit label
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    ctx.font = '8px "ABC Diatype Mono", "Courier New", monospace';
+    ctx.font = '8px "ABC Diatype", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('km', RULER_W / 2, vh - RULER_H / 2);
+    ctx.fillText('km', vw - RULER_W / 2, RULER_H / 2);
   }
 
-  // Base grid cells — transparent fill, visible outline
-  if (mode === 'plan') {
-    for (const [, c] of Object.entries(cellDataCache)) {
-      const [sx, sy] = project(c.cx, c.cy, 0);
-      if (sx + cellPx < 0 || sx - cellPx > vw || sy + cellPx < 0 || sy - cellPx > vh) continue;
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth = 0.5;
-      ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
-    }
-  } else if (mode === 'iso') {
-    for (const [, c] of Object.entries(cellDataCache)) {
-      drawQuad(ctx, project, c.cx, c.cy, 0, 'transparent', 'rgba(255,255,255,0.06)');
-    }
+  // Base grid cells
+  for (const [, c] of Object.entries(cellDataCache)) {
+    const [sx, sy] = project(c.cx, c.cy, 0);
+    if (sx + cellPx < 0 || sx - cellPx > vw || sy + cellPx < 0 || sy - cellPx > vh) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
   }
 
-  // Occupied cells
+  // Occupied cells — with interpolation between phases for smooth animation
   if (snapshot) {
-    let entries = Object.entries(snapshot.occupied);
-    if (mode === 'iso') {
-      entries = entries
-        .filter(([id]) => cellDataCache![id])
-        .sort(([aId], [bId]) => {
-          const ca = cellDataCache![aId], cb = cellDataCache![bId];
-          return (ca.cy - cb.cy) || (ca.cx - cb.cx);
-        });
+    // Collect all cell IDs from current and next phase for blending
+    const allIds = new Set(Object.keys(snapshot.occupied));
+    if (nextSnapshot && blend > 0) {
+      for (const id of Object.keys(nextSnapshot.occupied)) allIds.add(id);
     }
 
-    for (const [id, data] of entries) {
+    for (const id of allIds) {
       const c = cellDataCache![id];
       if (!c) continue;
 
-      if (data.levels === 0) {
-        if (mode === 'plan') {
-          const [sx, sy] = project(c.cx, c.cy, 0);
-          ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
-        }
+      const currData = snapshot.occupied[id];
+      const nextData = nextSnapshot?.occupied[id];
+
+      // Determine effective levels and age
+      let levels: number;
+      let age: number;
+      let cellAlpha = 1;
+
+      if (currData && nextData) {
+        // Cell exists in both — interpolate
+        levels = currData.levels;
+        age = currData.age;
+      } else if (currData && !nextData) {
+        // Cell being shed — fade out
+        levels = currData.levels;
+        age = currData.age;
+        cellAlpha = 1 - blend;
+      } else if (!currData && nextData) {
+        // Cell being added — fade in
+        levels = nextData.levels;
+        age = nextData.age;
+        cellAlpha = blend;
+      } else {
         continue;
       }
 
-      const [r, g, b, a] = ageColor(data.age, maxAge);
-      const baseAlpha = a / 255;
-
-      if (mode === 'plan') {
+      if (levels === 0) {
+        if (cellAlpha < 0.1) continue;
         const [sx, sy] = project(c.cx, c.cy, 0);
-        if (sx + cellPx * 2 < 0 || sx - cellPx * 2 > vw || sy + cellPx * 2 < 0 || sy - cellPx * 2 > vh) continue;
-        ctx.shadowColor = `rgb(${r},${g},${b})`;
-        ctx.shadowBlur = 6;
-        ctx.fillStyle = `rgba(${r},${g},${b},${baseAlpha.toFixed(2)})`;
-        ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 60)},${Math.min(255, b + 60)},0.5)`;
+        ctx.strokeStyle = `rgba(255,255,255,${0.06 * cellAlpha})`;
         ctx.lineWidth = 0.5;
         ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
-        if (data.levels > 1) {
-          ctx.fillStyle = '#fff';
-          ctx.font = `${Math.max(7, cellPx * 0.8)}px "ABC Diatype Mono", monospace`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(`${data.levels}`, sx, sy);
-        }
-      } else if (mode === 'iso') {
-        drawIsoCube(ctx, project, c.cx, c.cy, data.levels, r, g, b, baseAlpha);
+        continue;
+      }
+
+      const [r, g, b, a] = themeColor(colorTheme, age, maxAge, c, levels, store.maxLevels);
+      const baseAlpha = (a / 255) * cellAlpha;
+
+      const [sx, sy] = project(c.cx, c.cy, 0);
+      if (sx + cellPx * 2 < 0 || sx - cellPx * 2 > vw || sy + cellPx * 2 < 0 || sy - cellPx * 2 > vh) continue;
+      ctx.shadowColor = `rgb(${r},${g},${b})`;
+      ctx.shadowBlur = 6 * cellAlpha;
+      ctx.fillStyle = `rgba(${r},${g},${b},${baseAlpha.toFixed(3)})`;
+      ctx.fillRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = `rgba(${Math.min(255, r + 60)},${Math.min(255, g + 60)},${Math.min(255, b + 60)},${(0.5 * cellAlpha).toFixed(3)})`;
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(sx - cellPx, sy - cellPx, cellPx * 2, cellPx * 2);
+      if (levels > 1 && cellAlpha > 0.5) {
+        ctx.fillStyle = `rgba(255,255,255,${cellAlpha.toFixed(2)})`;
+        ctx.font = `${Math.max(7, cellPx * 0.8)}px "ABC Diatype Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${levels}`, sx, sy);
       }
     }
   }
 
-  // Seed/target markers (plan only, not in export)
-  if (mode === 'plan' && showLabels) {
+  // Seed/target markers
+  if (showLabels) {
     if (store.seedId && cellDataCache![store.seedId]) {
       const c = cellDataCache![store.seedId];
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
-      ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
+      ctx.font = '11px "ABC Diatype", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
       ctx.fillText('SEED', sx, sy - 12);
@@ -306,7 +309,7 @@ function renderViewport(
       const [sx, sy] = project(c.cx, c.cy, 0);
       ctx.fillStyle = '#FF0000';
       ctx.fillRect(sx - 5, sy - 5, 10, 10);
-      ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
+      ctx.font = '11px "ABC Diatype", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
       ctx.fillText('TARGET', sx, sy - 12);
@@ -325,121 +328,30 @@ function renderViewport(
       ctx.setLineDash([]);
     }
   }
-
-  // View label
-  if (showLabels) {
-    ctx.fillStyle = '#555';
-    ctx.font = '11px "ABC Diatype Mono", "Courier New", monospace';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'bottom';
-    const labels: Record<string, string> = {
-      plan: 'PLAN VIEW — ISN93 / EPSG:3057',
-      iso: 'ISOMETRIC NW',
-    };
-    ctx.fillText(labels[mode] || mode.toUpperCase(), vw - 10, vh - 10);
-  }
 }
-
-// ====================== DRAWING HELPERS ======================
-
-function drawQuad(
-  ctx: CanvasRenderingContext2D, project: ProjectFn,
-  cx: number, cy: number, z: number,
-  fill: string, stroke?: string,
-) {
-  const H = DRAW_HALF;
-  const pts = [
-    project(cx - H, cy - H, z),
-    project(cx + H, cy - H, z),
-    project(cx + H, cy + H, z),
-    project(cx - H, cy + H, z),
-  ];
-  ctx.beginPath();
-  ctx.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < 4; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.fill();
-  if (stroke) {
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
-  }
-}
-
-function drawIsoCube(
-  ctx: CanvasRenderingContext2D, project: ProjectFn,
-  cx: number, cy: number, levels: number,
-  r: number, g: number, b: number, alpha: number,
-) {
-  for (let lev = 0; lev < levels; lev++) {
-    const zBot = lev * LEVEL_H;
-    const zTop = (lev + 1) * LEVEL_H;
-    const a = alpha * (0.6 + 0.4 * ((lev + 1) / levels));
-    const fill = `rgba(${r},${g},${b},${a.toFixed(2)})`;
-    const dark1 = `rgba(${Math.round(r * 0.5)},${Math.round(g * 0.5)},${Math.round(b * 0.5)},${(a * 0.9).toFixed(2)})`;
-    const dark2 = `rgba(${Math.round(r * 0.65)},${Math.round(g * 0.65)},${Math.round(b * 0.65)},${(a * 0.9).toFixed(2)})`;
-    const stroke = `rgba(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)},0.4)`;
-
-    const H = DRAW_HALF;
-    // Right face
-    const rf = [
-      project(cx - H, cy - H, zBot), project(cx + H, cy - H, zBot),
-      project(cx + H, cy - H, zTop), project(cx - H, cy - H, zTop),
-    ];
-    ctx.beginPath();
-    ctx.moveTo(rf[0][0], rf[0][1]);
-    for (let i = 1; i < 4; i++) ctx.lineTo(rf[i][0], rf[i][1]);
-    ctx.closePath();
-    ctx.fillStyle = dark1;
-    ctx.fill();
-    ctx.strokeStyle = stroke; ctx.lineWidth = 0.5; ctx.stroke();
-
-    // Left face
-    const lf = [
-      project(cx - H, cy + H, zBot), project(cx - H, cy - H, zBot),
-      project(cx - H, cy - H, zTop), project(cx - H, cy + H, zTop),
-    ];
-    ctx.beginPath();
-    ctx.moveTo(lf[0][0], lf[0][1]);
-    for (let i = 1; i < 4; i++) ctx.lineTo(lf[i][0], lf[i][1]);
-    ctx.closePath();
-    ctx.fillStyle = dark2;
-    ctx.fill();
-    ctx.strokeStyle = stroke; ctx.lineWidth = 0.5; ctx.stroke();
-
-    // Top face
-    drawQuad(ctx, project, cx, cy, zTop, fill, stroke);
-  }
-}
-
 
 // ====================== PUBLIC RENDER API ======================
 
-/** Render the plan viewport to an arbitrary canvas at the current store state. */
 export function renderPlanToCanvas(canvas: HTMLCanvasElement, _phaseIndex: number) {
   if (!cellDataCache) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const w = canvas.width;
   const h = canvas.height;
-  // Clear to transparent
   ctx.clearRect(0, 0, w, h);
-  // Scale to fit the export canvas
   const dataW = maxX - minX + 4000;
   const dataH = maxY - minY + 4000;
   const fitScale = Math.min(w / dataW, h / dataH);
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   const proj = makePlanProject(w, h, centerX, centerY, fitScale);
-  renderViewport(ctx, w, h, proj, 'plan', false, true, false); // no terrain, transparent bg, no labels
+  renderViewport(ctx, w, h, proj, false, true, false);
 }
 
 // ====================== MAIN COMPONENT ======================
 
 export default function MapView() {
-  const planRef = useRef<HTMLCanvasElement>(null);
-  const isoNwRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<(() => void) | null>(null);
 
   const dragRef = useRef<{ dragging: boolean; lastX: number; lastY: number }>({
@@ -449,7 +361,7 @@ export default function MapView() {
   const {
     setDataLoaded, placementMode, setPlacementMode,
     seedId, targetId, setSeedId, setTargetId,
-    currentPhase, phases,
+    currentPhase, phases, colorTheme, playing,
     viewCenterX, viewCenterY, viewScale, setView,
   } = useStore();
 
@@ -465,12 +377,14 @@ export default function MapView() {
       fetch('/data/growth_adjacency_500m.json').then(r => r.json()) as Promise<GrowthAdjacencyFile>,
       fetch('/data/coastline_3057.json').then(r => r.json()).catch(() => null),
       fetch('/data/terrain_meta.json').then(r => r.json()).catch(() => null),
-    ]).then(([cellFile, adjFile, coast, tMeta]) => {
+      fetch('/data/iceland_hillshade_meta.json').then(r => r.json()).catch(() => null),
+    ]).then(([cellFile, adjFile, coast, tMeta, iMeta]) => {
       cellDataCache = cellFile.cells;
       adjacencyCache = adjFile;
       coastlineData = coast;
       terrainMeta = tMeta;
 
+      // Load study area terrain
       if (tMeta) {
         const img = new Image();
         img.onload = () => {
@@ -481,6 +395,17 @@ export default function MapView() {
         img.src = '/data/terrain_hillshade.png';
       }
 
+      // Load full-Iceland terrain
+      if (iMeta) {
+        icelandMeta = iMeta.bounds;
+        const img = new Image();
+        img.onload = () => {
+          icelandImage = img;
+          renderRef.current?.();
+        };
+        img.src = '/data/iceland_hillshade.png';
+      }
+
       for (const c of Object.values(cellFile.cells)) {
         if (c.cx < minX) minX = c.cx;
         if (c.cx > maxX) maxX = c.cx;
@@ -488,13 +413,11 @@ export default function MapView() {
         if (c.cy > maxY) maxY = c.cy;
       }
 
-      // Set initial view to center on grid — fit to plan viewport
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
       const dataW = maxX - minX + 4000;
       const dataH = maxY - minY + 4000;
-      const fitScale = Math.min(800 / dataW, 500 / dataH);
-      useStore.getState().setView(cx, cy, fitScale);
+      // Keep the store's initial Iceland-wide view; don't override with study-area fit
 
       setGridInfo({
         cellCount: Object.keys(cellFile.cells).length,
@@ -505,75 +428,74 @@ export default function MapView() {
     });
   }, []);
 
-  // Render all viewports
+  // Render function (reads all state from store, no closures over React state)
+  const renderFrame = useCallback(() => {
+    const store = useStore.getState();
+    const { viewCenterX: cx, viewCenterY: cy, viewScale: scale } = store;
+    const canvasEl = canvasRef.current;
+    if (!canvasEl || !cellDataCache) return;
+    const rect = canvasEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const dpr = devicePixelRatio;
+    canvasEl.width = rect.width * dpr;
+    canvasEl.height = rect.height * dpr;
+    const ctx = canvasEl.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    const proj = makePlanProject(rect.width, rect.height, cx, cy, scale);
+    renderViewport(ctx, rect.width, rect.height, proj, true, false, true, store.colorTheme);
+  }, []);
+
+  // Store render function ref
   useEffect(() => {
-    if (!ready) return;
-
-    const render = () => {
-      const store = useStore.getState();
-      const { viewCenterX: cx, viewCenterY: cy, viewScale: scale } = store;
-
-      // Helper to render a canvas
-      const renderCanvas = (
-        canvasEl: HTMLCanvasElement | null,
-        projFn: (w: number, h: number) => ProjectFn,
-        mode: 'plan' | 'iso',
-        terrain: boolean,
-      ) => {
-        if (!canvasEl || !cellDataCache) return;
-        const rect = canvasEl.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return;
-        const dpr = devicePixelRatio;
-        canvasEl.width = rect.width * dpr;
-        canvasEl.height = rect.height * dpr;
-        const ctx = canvasEl.getContext('2d')!;
-        ctx.scale(dpr, dpr);
-        const proj = projFn(rect.width, rect.height);
-        renderViewport(ctx, rect.width, rect.height, proj, mode, terrain);
-      };
-
-      // PLAN (main)
-      renderCanvas(planRef.current, (w, h) => makePlanProject(w, h, cx, cy, scale), 'plan', true);
-
-      // ISO from NW (45° Z, 35° X)
-      renderCanvas(isoNwRef.current, (w, h) => makeIsoProject(w, h, cx, cy, scale * 0.55, 45, 35), 'iso', false);
-
-    };
-
-    render();
-    renderRef.current = render;
+    renderRef.current = renderFrame;
     return () => { renderRef.current = null; };
-  }, [ready, currentPhase, phases, seedId, targetId, viewCenterX, viewCenterY, viewScale]);
+  }, [renderFrame]);
 
-  // Mouse: zoom
+  // Continuous rAF loop when playing — runs independently of React state changes
+  useEffect(() => {
+    if (!ready || !playing) return;
+    let rafId: number;
+    const loop = () => {
+      renderFrame();
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, [ready, playing, renderFrame]);
+
+  // Static render when not playing — re-render on relevant state changes
+  useEffect(() => {
+    if (!ready || playing) return;
+    renderFrame();
+  }, [ready, playing, currentPhase, phases, seedId, targetId, viewCenterX, viewCenterY, viewScale, colorTheme]);
+
+  // Zoom
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     const store = useStore.getState();
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     const newScale = store.viewScale * factor;
 
-    const planCanvas = planRef.current;
-    if (planCanvas) {
-      const rect = planCanvas.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      if (mx >= 0 && mx <= rect.width && my >= 0 && my <= rect.height) {
-        const ox = rect.width / 2 - store.viewCenterX * store.viewScale;
-        const oy = rect.height / 2 + store.viewCenterY * store.viewScale;
-        const wx = (mx - ox) / store.viewScale;
-        const wy = -(my - oy) / store.viewScale;
-        const ncx = wx + (store.viewCenterX - wx) / factor;
-        const ncy = wy + (store.viewCenterY - wy) / factor;
-        store.setView(ncx, ncy, newScale);
-        renderRef.current?.();
-        return;
-      }
+      const ox = rect.width / 2 - store.viewCenterX * store.viewScale;
+      const oy = rect.height / 2 + store.viewCenterY * store.viewScale;
+      const wx = (mx - ox) / store.viewScale;
+      const wy = -(my - oy) / store.viewScale;
+      const ncx = wx + (store.viewCenterX - wx) / factor;
+      const ncy = wy + (store.viewCenterY - wy) / factor;
+      store.setView(ncx, ncy, newScale);
+      renderRef.current?.();
+      return;
     }
     store.setView(store.viewCenterX, store.viewCenterY, newScale);
     renderRef.current?.();
   }, []);
 
-  // Mouse: pan
+  // Pan
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
       dragRef.current = { dragging: true, lastX: e.clientX, lastY: e.clientY };
@@ -599,13 +521,13 @@ export default function MapView() {
     dragRef.current.dragging = false;
   }, []);
 
-  // Click to place seed/target (plan viewport only)
+  // Click to place seed/target
   const handlePlanClick = useCallback((e: React.MouseEvent) => {
     if (!cellDataCache) return;
     const pm = useStore.getState().placementMode;
     if (pm === 'none') return;
 
-    const canvas = planRef.current;
+    const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -633,149 +555,24 @@ export default function MapView() {
 
   const pm = useStore(s => s.placementMode);
 
-  // Shared event handlers for secondary viewports
-  const secondaryHandlers = {
-    onWheel: handleWheel,
-    onMouseDown: handleMouseDown,
-    onMouseMove: handleMouseMove,
-    onMouseUp: handleMouseUp,
-    onMouseLeave: handleMouseUp,
-    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
-  };
-
-  // Scale bar for info panel
-  const s = viewScale;
-  const sbCandidates = [500, 1000, 2000, 5000, 10000, 20000, 50000];
-  let sbDist = 5000;
-  for (const c of sbCandidates) {
-    if (c * s > 40 && c * s < 200) { sbDist = c; break; }
-  }
-  const sb = { px: sbDist * s, label: sbDist >= 1000 ? `${sbDist / 1000} km` : `${sbDist} m` };
-
   return (
-    <div style={styles.grid}>
-      {/* Row 1: ISO NW + Plan + Info */}
-      <div style={styles.cell}>
-        <canvas ref={isoNwRef} {...secondaryHandlers} style={styles.canvas} />
-        <div style={styles.viewLabel}>ISO NW</div>
-      </div>
-      <div style={styles.cell}>
-        <canvas
-          ref={planRef}
-          onClick={handlePlanClick}
-          onWheel={handleWheel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onContextMenu={(e) => e.preventDefault()}
-          style={{ ...styles.canvas, cursor: pm !== 'none' ? 'crosshair' : 'grab' }}
-        />
-      </div>
-      <div style={styles.sideCell} />
-
-      {/* Row 2: Empty + Timeline (via overlay) + Info */}
-      <div style={styles.sideCell} />
-      <div style={styles.cell} id="timeline-cell" />
-      <div style={styles.infoCell}>
-        <div style={styles.infoContent}>
-          <div style={styles.infoSection}>PROJECTION</div>
-          <div style={styles.infoValue}>ISN93 / LAMBERT 1993</div>
-          <div style={styles.infoValue}>EPSG:3057</div>
-          <div style={styles.infoSpacer} />
-
-          <div style={styles.infoSection}>EXTENT (km)</div>
-          <div style={styles.infoValue}>
-            E {gridInfo ? `${(gridInfo.eMin / 1000).toFixed(1)} — ${(gridInfo.eMax / 1000).toFixed(1)}` : '—'}
-          </div>
-          <div style={styles.infoValue}>
-            N {gridInfo ? `${(gridInfo.nMin / 1000).toFixed(1)} — ${(gridInfo.nMax / 1000).toFixed(1)}` : '—'}
-          </div>
-          <div style={styles.infoSpacer} />
-
-          <div style={styles.infoSection}>GRID</div>
-          <div style={styles.infoValue}>500m CELLS — {gridInfo ? gridInfo.cellCount.toLocaleString() : '—'}</div>
-          <div style={styles.infoSpacer} />
-
-          <div style={styles.infoSection}>SCALE</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-            <div style={{ width: Math.max(20, sb.px), height: 2, background: '#F5F5F5' }} />
-            <span style={styles.infoValue}>{sb.label}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <canvas
+      ref={canvasRef}
+      onClick={handlePlanClick}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{
+        position: 'absolute',
+        top: 0, left: 0, right: 0, bottom: 0,
+        width: '100%',
+        height: '100%',
+        display: 'block',
+        cursor: pm !== 'none' ? 'crosshair' : 'grab',
+      }}
+    />
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  grid: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    display: 'grid',
-    gridTemplateColumns: '2fr 13fr 2fr',
-    gridTemplateRows: '3fr 1fr',
-    gap: 2,
-  },
-  cell: {
-    position: 'relative',
-    border: '0.5px solid #333',
-    overflow: 'hidden',
-    minHeight: 0,
-  },
-  infoCell: {
-    position: 'relative',
-    border: '0.5px solid #333',
-    overflow: 'hidden',
-    minHeight: 0,
-    background: 'rgba(0,0,0,0.95)',
-  },
-  infoContent: {
-    padding: '10px 12px',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-    height: '100%',
-    overflowY: 'auto',
-  },
-  infoSection: {
-    color: '#666',
-    fontSize: 10,
-    letterSpacing: '0.08em',
-    marginBottom: 2,
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-  },
-  infoValue: {
-    color: '#aaa',
-    fontSize: 11,
-    lineHeight: '15px',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-  },
-  infoSpacer: {
-    height: 8,
-  },
-  sideCell: {
-    position: 'relative',
-    border: '0.5px solid #333',
-    overflow: 'hidden',
-    minHeight: 0,
-    background: 'rgba(0,0,0,0.95)',
-  },
-  canvas: {
-    width: '100%',
-    height: '100%',
-    display: 'block',
-    cursor: 'grab',
-  },
-  viewLabel: {
-    position: 'absolute',
-    bottom: 6,
-    right: 8,
-    color: '#555',
-    fontSize: 11,
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-    letterSpacing: '0.08em',
-    pointerEvents: 'none',
-  },
-};

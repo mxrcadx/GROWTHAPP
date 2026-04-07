@@ -1,0 +1,15 @@
+{
+  "file": "iceland_hillshade.png",
+  "crs": "EPSG:3057",
+  "width": 4000,
+  "height": 3048,
+  "bounds": {
+    "left": 246757.86089519298,
+    "bottom": 277029.1452474301,
+    "right": 854150.8800830129,
+    "top": 739952.4418478654
+  },
+  "pixel_size_m": 151.85,
+  "style": "multi-directional hillshade + slope composite (8 azimuths, 35deg altitude)",
+  "brightness_range": "0-60 (dark, high internal contrast)"
+}

@@ -1,23 +1,21 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useStore } from '../store';
 import type { CurvePoint } from '../types';
 
-const HEIGHT = 270;
 const PAD_LEFT = 90;
 const PAD_RIGHT = 20;
 const PAD_TOP = 30;
 const PAD_BOTTOM = 40;
-const MAX_Y = 600; // km² max on Y axis
+const MAX_Y = 500; // km² max on Y axis
 const HANDLE_RADIUS = 6;
-const SNAP_RADIUS = 12; // px proximity to grab a handle
+const SNAP_RADIUS = 12;
 
 type DragTarget =
   | { type: 'scrubber' }
-  | { type: 'land'; index: number }
-  | { type: 'floor'; index: number }
+  | { type: 'territory'; index: number }
+  | { type: 'compute'; index: number }
   | null;
 
-/** Monotone cubic interpolation matching the worker */
 function interpolateCurve(points: CurvePoint[], phase: number): number {
   if (points.length === 0) return 0;
   if (phase <= points[0].phase) return points[0].value;
@@ -53,22 +51,22 @@ function interpolateCurve(points: CurvePoint[], phase: number): number {
 export default function TimelineGraph() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragTarget = useRef<DragTarget>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   const {
     phases, currentPhase, setCurrentPhase,
-    totalPhases, landCurve, floorCurve,
-    setLandCurve, setFloorCurve,
+    totalPhases, territoryCurve, computeCurve,
+    setTerritoryCurve, setComputeCurve,
   } = useStore();
 
-  // Coordinate helpers bound to current canvas size
   const getPlotMetrics = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const W = rect.width;
+    const H = rect.height;
     const plotW = W - PAD_LEFT - PAD_RIGHT;
-    const H_metrics = canvasRef.current?.getBoundingClientRect().height ?? HEIGHT;
-    const plotH = H_metrics - PAD_TOP - PAD_BOTTOM;
+    const plotH = H - PAD_TOP - PAD_BOTTOM;
     const xPos = (phase: number) => PAD_LEFT + (phase / Math.max(totalPhases - 1, 1)) * plotW;
     const yPos = (v: number) => PAD_TOP + plotH - (v / MAX_Y) * plotH;
     const phaseFromX = (x: number) => Math.round(Math.max(0, Math.min(totalPhases - 1, ((x - PAD_LEFT) / plotW) * (totalPhases - 1))));
@@ -96,14 +94,17 @@ export default function TimelineGraph() {
     const xPos = (phase: number) => PAD_LEFT + (phase / Math.max(totalPhases - 1, 1)) * plotW;
     const yPos = (v: number) => PAD_TOP + plotH - (v / MAX_Y) * plotH;
 
-    // Background
-    ctx.fillStyle = 'rgba(0,0,0,0.85)';
-    ctx.fillRect(0, 0, W, H);
-
-    // Border
-    ctx.strokeStyle = '#333';
+    // Background — 5% grey with rounded corners
+    ctx.fillStyle = 'rgba(13,13,13,0.95)';
+    const br = 8;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, W, H, br);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
     ctx.lineWidth = 0.5;
-    ctx.strokeRect(0, 0, W, H);
+    ctx.beginPath();
+    ctx.roundRect(0, 0, W, H, br);
+    ctx.stroke();
 
     ctx.font = '10px "ABC Diatype Mono", "Courier New", monospace';
 
@@ -155,50 +156,49 @@ export default function TimelineGraph() {
       ctx.fillText(`${i}`, x, H - PAD_BOTTOM + 14);
     }
 
-    // Draw filled area between floor and land curves (where floor > land = stacking)
+    // Filled area between compute and territory curves (stacking region)
     ctx.beginPath();
     for (let px = 0; px <= totalPhases - 1; px++) {
       const x = xPos(px);
-      const y = yPos(interpolateCurve(floorCurve, px));
+      const y = yPos(interpolateCurve(computeCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
     for (let px = totalPhases - 1; px >= 0; px--) {
       const x = xPos(px);
-      const y = yPos(interpolateCurve(landCurve, px));
+      const y = yPos(interpolateCurve(territoryCurve, px));
       ctx.lineTo(x, y);
     }
     ctx.closePath();
-    ctx.fillStyle = 'rgba(0, 122, 255, 0.08)';
+    ctx.fillStyle = 'rgba(57, 255, 20, 0.06)';
     ctx.fill();
 
-    // Draw FLOOR SPACE interpolated curve
-    ctx.strokeStyle = 'rgba(100, 170, 255, 0.7)';
+    // Draw COMPUTE interpolated curve
+    ctx.strokeStyle = '#F5F5F5';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let px = 0; px <= totalPhases - 1; px++) {
       const x = xPos(px);
-      const y = yPos(interpolateCurve(floorCurve, px));
+      const y = yPos(interpolateCurve(computeCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // Draw LAND AREA interpolated curve
-    ctx.strokeStyle = '#F5F5F5';
+    // Draw TERRITORY interpolated curve
+    ctx.strokeStyle = '#39FF14';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (let px = 0; px <= totalPhases - 1; px++) {
       const x = xPos(px);
-      const y = yPos(interpolateCurve(landCurve, px));
+      const y = yPos(interpolateCurve(territoryCurve, px));
       if (px === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // Actual simulation results (if available) — thin dotted lines
+    // Actual simulation results — thin dotted lines
     if (phases.length > 0) {
-      // Actual land area
       ctx.strokeStyle = 'rgba(255,255,255,0.3)';
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 2]);
@@ -211,8 +211,7 @@ export default function TimelineGraph() {
       }
       ctx.stroke();
 
-      // Actual floor space
-      ctx.strokeStyle = 'rgba(100,170,255,0.3)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
       ctx.beginPath();
       for (let i = 0; i < phases.length; i++) {
         const x = xPos(i);
@@ -224,12 +223,12 @@ export default function TimelineGraph() {
       ctx.setLineDash([]);
     }
 
-    // Floor space control point handles
-    for (const pt of floorCurve) {
+    // Compute control point handles
+    for (const pt of computeCurve) {
       const x = xPos(pt.phase);
       const y = yPos(pt.value);
-      ctx.fillStyle = 'rgba(100, 170, 255, 0.9)';
-      ctx.strokeStyle = '#007AFF';
+      ctx.fillStyle = '#F5F5F5';
+      ctx.strokeStyle = '#999';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(x, y, HANDLE_RADIUS - 1, 0, Math.PI * 2);
@@ -237,12 +236,12 @@ export default function TimelineGraph() {
       ctx.stroke();
     }
 
-    // Land area control point handles
-    for (const pt of landCurve) {
+    // Territory control point handles
+    for (const pt of territoryCurve) {
       const x = xPos(pt.phase);
       const y = yPos(pt.value);
-      ctx.fillStyle = '#F5F5F5';
-      ctx.strokeStyle = '#999';
+      ctx.fillStyle = '#39FF14';
+      ctx.strokeStyle = '#2bcc10';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(x, y, HANDLE_RADIUS, 0, Math.PI * 2);
@@ -261,18 +260,16 @@ export default function TimelineGraph() {
       ctx.lineTo(scrubX, H - PAD_BOTTOM);
       ctx.stroke();
 
-      // Scrubber handle
       ctx.fillStyle = '#F5F5F5';
       ctx.fillRect(scrubX - 4, H - PAD_BOTTOM - 2, 8, 6);
 
-      // Phase info
       if (phases[currentPhase]) {
         ctx.fillStyle = '#F5F5F5';
         ctx.textAlign = 'left';
         ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
         const p = phases[currentPhase];
         ctx.fillText(
-          `P${currentPhase}  LAND: ${p.landArea.toFixed(1)} km²  FLOOR: ${p.floorSpace.toFixed(1)} km²`,
+          `P${currentPhase}  TERRITORY: ${p.landArea.toFixed(1)} km²  COMPUTE: ${p.floorSpace.toFixed(1)} km²`,
           PAD_LEFT + 4, PAD_TOP - 8
         );
       }
@@ -281,12 +278,12 @@ export default function TimelineGraph() {
     // Legend
     ctx.font = '9px "ABC Diatype Mono", "Courier New", monospace';
     ctx.textAlign = 'right';
+    ctx.fillStyle = '#39FF14';
+    ctx.fillText('TERRITORY', W - PAD_RIGHT - 4, PAD_TOP + 10);
     ctx.fillStyle = '#F5F5F5';
-    ctx.fillText('LAND AREA', W - PAD_RIGHT - 4, PAD_TOP + 10);
-    ctx.fillStyle = 'rgba(100, 170, 255, 0.9)';
-    ctx.fillText('FLOOR SPACE', W - PAD_RIGHT - 4, PAD_TOP + 22);
+    ctx.fillText('COMPUTE', W - PAD_RIGHT - 4, PAD_TOP + 22);
 
-  }, [phases, currentPhase, totalPhases, landCurve, floorCurve]);
+  }, [phases, currentPhase, totalPhases, territoryCurve, computeCurve]);
 
   // Mouse interaction
   const handleMouse = useCallback((e: React.MouseEvent, down?: boolean) => {
@@ -302,27 +299,23 @@ export default function TimelineGraph() {
     }
 
     if (down === true) {
-      // Find closest handle
       let best: DragTarget = null;
       let bestDist = SNAP_RADIUS;
 
-      // Check land curve handles
-      for (let i = 0; i < landCurve.length; i++) {
-        const hx = m.xPos(landCurve[i].phase);
-        const hy = m.yPos(landCurve[i].value);
+      for (let i = 0; i < territoryCurve.length; i++) {
+        const hx = m.xPos(territoryCurve[i].phase);
+        const hy = m.yPos(territoryCurve[i].value);
         const d = Math.sqrt((x - hx) ** 2 + (y - hy) ** 2);
-        if (d < bestDist) { bestDist = d; best = { type: 'land', index: i }; }
+        if (d < bestDist) { bestDist = d; best = { type: 'territory', index: i }; }
       }
 
-      // Check floor curve handles
-      for (let i = 0; i < floorCurve.length; i++) {
-        const hx = m.xPos(floorCurve[i].phase);
-        const hy = m.yPos(floorCurve[i].value);
+      for (let i = 0; i < computeCurve.length; i++) {
+        const hx = m.xPos(computeCurve[i].phase);
+        const hy = m.yPos(computeCurve[i].value);
         const d = Math.sqrt((x - hx) ** 2 + (y - hy) ** 2);
-        if (d < bestDist) { bestDist = d; best = { type: 'floor', index: i }; }
+        if (d < bestDist) { bestDist = d; best = { type: 'compute', index: i }; }
       }
 
-      // If no handle hit, drag scrubber
       if (!best && phases.length > 0) {
         best = { type: 'scrubber' };
       }
@@ -342,25 +335,23 @@ export default function TimelineGraph() {
 
     const newValue = Math.round(m.valueFromY(y));
 
-    if (target.type === 'land') {
-      const pts = [...landCurve];
+    if (target.type === 'territory') {
+      const pts = [...territoryCurve];
       const i = target.index;
-      // First and last points: only allow Y drag
       if (i === 0 || i === pts.length - 1) {
         pts[i] = { ...pts[i], value: newValue };
       } else {
-        // Allow X drag within bounds of neighbors
         const newPhase = m.phaseFromX(x);
         const minPhase = pts[i - 1].phase + 1;
         const maxPhase = pts[i + 1].phase - 1;
         pts[i] = { phase: Math.max(minPhase, Math.min(maxPhase, newPhase)), value: newValue };
       }
-      setLandCurve(pts);
+      setTerritoryCurve(pts);
       return;
     }
 
-    if (target.type === 'floor') {
-      const pts = [...floorCurve];
+    if (target.type === 'compute') {
+      const pts = [...computeCurve];
       const i = target.index;
       if (i === 0 || i === pts.length - 1) {
         pts[i] = { ...pts[i], value: newValue };
@@ -370,9 +361,9 @@ export default function TimelineGraph() {
         const maxPhase = pts[i + 1].phase - 1;
         pts[i] = { phase: Math.max(minPhase, Math.min(maxPhase, newPhase)), value: newValue };
       }
-      setFloorCurve(pts);
+      setComputeCurve(pts);
     }
-  }, [phases, totalPhases, landCurve, floorCurve, setLandCurve, setFloorCurve, setCurrentPhase, getPlotMetrics]);
+  }, [phases, totalPhases, territoryCurve, computeCurve, setTerritoryCurve, setComputeCurve, setCurrentPhase, getPlotMetrics]);
 
   // Double-click to add a control point
   const handleDblClick = useCallback((e: React.MouseEvent) => {
@@ -383,22 +374,19 @@ export default function TimelineGraph() {
     const phase = m.phaseFromX(x);
     const value = Math.round(m.valueFromY(y));
 
-    // Determine which curve is closer at this X position
-    const landY = m.yPos(interpolateCurve(landCurve, phase));
-    const floorY = m.yPos(interpolateCurve(floorCurve, phase));
-    const landDist = Math.abs(y - landY);
-    const floorDist = Math.abs(y - floorY);
+    const territoryY = m.yPos(interpolateCurve(territoryCurve, phase));
+    const computeY = m.yPos(interpolateCurve(computeCurve, phase));
+    const territoryDist = Math.abs(y - territoryY);
+    const computeDist = Math.abs(y - computeY);
 
-    if (landDist <= floorDist) {
-      // Add to land curve
-      const pts = [...landCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
-      setLandCurve(pts);
+    if (territoryDist <= computeDist) {
+      const pts = [...territoryCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
+      setTerritoryCurve(pts);
     } else {
-      // Add to floor curve
-      const pts = [...floorCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
-      setFloorCurve(pts);
+      const pts = [...computeCurve, { phase, value }].sort((a, b) => a.phase - b.phase);
+      setComputeCurve(pts);
     }
-  }, [landCurve, floorCurve, setLandCurve, setFloorCurve, getPlotMetrics]);
+  }, [territoryCurve, computeCurve, setTerritoryCurve, setComputeCurve, getPlotMetrics]);
 
   // Right-click to remove a control point (not first/last)
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -408,31 +396,37 @@ export default function TimelineGraph() {
     const x = e.clientX - m.rect.left;
     const y = e.clientY - m.rect.top;
 
-    // Find closest handle
     let bestDist = SNAP_RADIUS * 2;
-    let bestCurve: 'land' | 'floor' | null = null;
+    let bestCurve: 'territory' | 'compute' | null = null;
     let bestIdx = -1;
 
-    for (let i = 1; i < landCurve.length - 1; i++) {
-      const d = Math.sqrt((x - m.xPos(landCurve[i].phase)) ** 2 + (y - m.yPos(landCurve[i].value)) ** 2);
-      if (d < bestDist) { bestDist = d; bestCurve = 'land'; bestIdx = i; }
+    for (let i = 1; i < territoryCurve.length - 1; i++) {
+      const d = Math.sqrt((x - m.xPos(territoryCurve[i].phase)) ** 2 + (y - m.yPos(territoryCurve[i].value)) ** 2);
+      if (d < bestDist) { bestDist = d; bestCurve = 'territory'; bestIdx = i; }
     }
-    for (let i = 1; i < floorCurve.length - 1; i++) {
-      const d = Math.sqrt((x - m.xPos(floorCurve[i].phase)) ** 2 + (y - m.yPos(floorCurve[i].value)) ** 2);
-      if (d < bestDist) { bestDist = d; bestCurve = 'floor'; bestIdx = i; }
+    for (let i = 1; i < computeCurve.length - 1; i++) {
+      const d = Math.sqrt((x - m.xPos(computeCurve[i].phase)) ** 2 + (y - m.yPos(computeCurve[i].value)) ** 2);
+      if (d < bestDist) { bestDist = d; bestCurve = 'compute'; bestIdx = i; }
     }
 
-    if (bestCurve === 'land' && bestIdx > 0) {
-      const pts = landCurve.filter((_, i) => i !== bestIdx);
-      setLandCurve(pts);
-    } else if (bestCurve === 'floor' && bestIdx > 0) {
-      const pts = floorCurve.filter((_, i) => i !== bestIdx);
-      setFloorCurve(pts);
+    if (bestCurve === 'territory' && bestIdx > 0) {
+      setTerritoryCurve(territoryCurve.filter((_, i) => i !== bestIdx));
+    } else if (bestCurve === 'compute' && bestIdx > 0) {
+      setComputeCurve(computeCurve.filter((_, i) => i !== bestIdx));
     }
-  }, [landCurve, floorCurve, setLandCurve, setFloorCurve, getPlotMetrics]);
+  }, [territoryCurve, computeCurve, setTerritoryCurve, setComputeCurve, getPlotMetrics]);
+
+  if (collapsed) {
+    return (
+      <button onClick={() => setCollapsed(false)} style={styles.collapseBtn}>
+        ▴ CURVES
+      </button>
+    );
+  }
 
   return (
     <div style={styles.wrapper}>
+      <button onClick={() => setCollapsed(true)} style={styles.hideBtn}>▾</button>
       <canvas
         ref={canvasRef}
         style={styles.canvas}
@@ -450,10 +444,10 @@ export default function TimelineGraph() {
 const styles: Record<string, React.CSSProperties> = {
   wrapper: {
     position: 'absolute',
-    bottom: 0,
-    left: 'calc(11.76% + 2px)',
-    right: 'calc(11.76% + 2px)',
-    top: 'calc(75% + 2px)',
+    bottom: 8,
+    left: 360,
+    right: 320,
+    height: 200,
     zIndex: 10,
   },
   canvas: {
@@ -461,5 +455,33 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     display: 'block',
     cursor: 'crosshair',
+  },
+  collapseBtn: {
+    position: 'absolute',
+    bottom: 8,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 10,
+    background: 'rgba(13,13,13,0.95)',
+    border: '0.5px solid rgba(255,255,255,0.1)',
+    borderRadius: 4,
+    color: '#777',
+    fontSize: 9,
+    padding: '4px 16px',
+    cursor: 'pointer',
+    fontFamily: "'ABC Diatype', sans-serif",
+    letterSpacing: '0.08em',
+  },
+  hideBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 8,
+    zIndex: 11,
+    background: 'transparent',
+    border: 'none',
+    color: '#555',
+    fontSize: 12,
+    cursor: 'pointer',
+    padding: '2px 6px',
   },
 };

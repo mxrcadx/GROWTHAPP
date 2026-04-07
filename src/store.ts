@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { PlacementMode, PhaseSnapshot, CurvePoint } from './types';
+import type { PlacementMode, PhaseSnapshot, CurvePoint, ColorTheme } from './types';
+// store v2 - decay removed
 
-function defaultLandCurve(totalPhases: number): CurvePoint[] {
+function defaultTerritoryCurve(totalPhases: number): CurvePoint[] {
   return [
     { phase: 0, value: 0 },
     { phase: Math.round(totalPhases * 0.1), value: 20 },
@@ -14,7 +15,7 @@ function defaultLandCurve(totalPhases: number): CurvePoint[] {
   ];
 }
 
-function defaultFloorCurve(totalPhases: number): CurvePoint[] {
+function defaultComputeCurve(totalPhases: number): CurvePoint[] {
   return [
     { phase: 0, value: 0 },
     { phase: Math.round(totalPhases * 0.1), value: 10 },
@@ -26,6 +27,7 @@ function defaultFloorCurve(totalPhases: number): CurvePoint[] {
     { phase: totalPhases - 1, value: 120 },
   ];
 }
+
 
 interface AppState {
   // Data loading
@@ -40,11 +42,11 @@ interface AppState {
   setSeedId: (id: string | null) => void;
   setTargetId: (id: string | null) => void;
 
-  // Curve control points
-  landCurve: CurvePoint[];
-  floorCurve: CurvePoint[];
-  setLandCurve: (pts: CurvePoint[]) => void;
-  setFloorCurve: (pts: CurvePoint[]) => void;
+  // Curve control points (renamed: land→territory, floor→compute)
+  territoryCurve: CurvePoint[];
+  computeCurve: CurvePoint[];
+  setTerritoryCurve: (pts: CurvePoint[]) => void;
+  setComputeCurve: (pts: CurvePoint[]) => void;
 
   // Simulation
   totalPhases: number;
@@ -61,20 +63,35 @@ interface AppState {
   setPlaying: (v: boolean) => void;
   looping: boolean;
   setLooping: (v: boolean) => void;
-  playSpeed: number; // 1, 2, 4, 8
+  playSpeed: number;
   setPlaySpeed: (v: number) => void;
+  phaseBlend: number;
+  setPhaseBlend: (v: number) => void;
 
   // Growth parameters
-  wSuit: number;    // suitability weight
-  wProx: number;    // proximity-to-target weight
-  wAdv: number;     // advance (seed→target direction) weight
-  maxLevels: number; // max stacking levels
-  hfStacking: boolean; // cap levels by heat flux
+  wSuit: number;
+  wProx: number;
+  wAdv: number;
+  maxLevels: number;
+  hfStacking: boolean;
   setWSuit: (v: number) => void;
   setWProx: (v: number) => void;
   setWAdv: (v: number) => void;
   setMaxLevels: (v: number) => void;
   setHfStacking: (v: boolean) => void;
+
+  // Color theme
+  colorTheme: ColorTheme;
+  setColorTheme: (t: ColorTheme) => void;
+
+  // Right panel
+  rightPanelOpen: boolean;
+  setRightPanelOpen: (v: boolean) => void;
+
+  // Algorithm log
+  algorithmLog: string[];
+  appendLog: (lines: string[]) => void;
+  clearLog: () => void;
 
   // Shared view state (world coords)
   viewCenterX: number;
@@ -96,19 +113,19 @@ export const useStore = create<AppState>((set) => ({
   setSeedId: (id) => set({ seedId: id }),
   setTargetId: (id) => set({ targetId: id }),
 
-  landCurve: defaultLandCurve(INITIAL_PHASES),
-  floorCurve: defaultFloorCurve(INITIAL_PHASES),
-  setLandCurve: (pts) => set({ landCurve: pts }),
-  setFloorCurve: (pts) => set({ floorCurve: pts }),
+  territoryCurve: defaultTerritoryCurve(INITIAL_PHASES),
+  computeCurve: defaultComputeCurve(INITIAL_PHASES),
+  setTerritoryCurve: (pts) => set({ territoryCurve: pts }),
+  setComputeCurve: (pts) => set({ computeCurve: pts }),
 
   totalPhases: INITIAL_PHASES,
-  setTotalPhases: (v) => set((s) => ({
+  setTotalPhases: (v) => set({
     totalPhases: v,
-    landCurve: defaultLandCurve(v),
-    floorCurve: defaultFloorCurve(v),
+    territoryCurve: defaultTerritoryCurve(v),
+    computeCurve: defaultComputeCurve(v),
     phases: [],
     currentPhase: 0,
-  })),
+  }),
   currentPhase: 0,
   setCurrentPhase: (v) => set({ currentPhase: v }),
   simulating: false,
@@ -118,10 +135,12 @@ export const useStore = create<AppState>((set) => ({
 
   playing: false,
   setPlaying: (v) => set({ playing: v }),
-  looping: false,
+  looping: true,
   setLooping: (v) => set({ looping: v }),
-  playSpeed: 1,
+  playSpeed: 5,
   setPlaySpeed: (v) => set({ playSpeed: v }),
+  phaseBlend: 0,
+  setPhaseBlend: (v) => set({ phaseBlend: v }),
 
   wSuit: 0.4,
   wProx: 0.6,
@@ -134,8 +153,20 @@ export const useStore = create<AppState>((set) => ({
   setMaxLevels: (v) => set({ maxLevels: v }),
   setHfStacking: (v) => set({ hfStacking: v }),
 
-  viewCenterX: 370000,
+  colorTheme: 'age',
+  setColorTheme: (t) => set({ colorTheme: t }),
+
+  rightPanelOpen: true,
+  setRightPanelOpen: (v) => set({ rightPanelOpen: v }),
+
+  algorithmLog: [],
+  appendLog: (lines) => set((s) => ({
+    algorithmLog: [...s.algorithmLog, ...lines].slice(-200),
+  })),
+  clearLog: () => set({ algorithmLog: [] }),
+
+  viewCenterX: 365000,
   viewCenterY: 400000,
-  viewScale: 1,
+  viewScale: 0.007,
   setView: (cx, cy, scale) => set({ viewCenterX: cx, viewCenterY: cy, viewScale: scale }),
 }));

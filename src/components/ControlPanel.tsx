@@ -1,30 +1,26 @@
 import { useStore } from '../store';
-import { getCellData, getAdjacency } from './MapView';
-import { exportPhaseDXF, downloadDXF } from '../utils/dxf';
-import { exportPythonScript, downloadPythonScript } from '../utils/exportPython';
-import { exportFrameSequence, DEFAULT_EXPORT_CONFIG } from '../utils/exportFrames';
-import { renderPlanToCanvas } from './MapView';
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { getCellData, getAdjacency, setPhaseBlendDirect } from './MapView';
+import { useRef, useEffect, useCallback } from 'react';
 import type { SimulationResult } from '../types';
-
-const PHASE_OPTIONS = [40, 100, 150, 200];
-const SPEED_OPTIONS = [1, 2, 4, 8];
 
 export default function ControlPanel() {
   const {
-    dataLoaded, placementMode, setPlacementMode,
+    dataLoaded,
     seedId, targetId,
-    landCurve, floorCurve,
-    totalPhases, setTotalPhases,
+    territoryCurve, computeCurve,
+    totalPhases,
     currentPhase, phases, setPhases, setCurrentPhase,
     simulating, setSimulating,
-    playing, setPlaying, looping, setLooping, playSpeed, setPlaySpeed,
+    playing, setPlaying,
+    playSpeed,
     wSuit, wProx, wAdv, maxLevels, hfStacking,
+    viewScale,
   } = useStore();
 
   const workerRef = useRef<Worker | null>(null);
   const animRef = useRef<number | null>(null);
-  const lastTickRef = useRef(0);
+  const playbackTimeRef = useRef(0);
+  const autoPlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Create worker
   useEffect(() => {
@@ -36,45 +32,32 @@ export default function ControlPanel() {
       if (e.data.result) {
         const res = e.data.result as SimulationResult;
         setPhases(res.phases);
-        setCurrentPhase(Math.min(useStore.getState().currentPhase, res.phases.length - 1));
+        setCurrentPhase(0);
         setSimulating(false);
+        // Store log entries
+        if (e.data.log) {
+          const lines: string[] = [];
+          for (const entry of e.data.log) {
+            lines.push(`── PHASE ${entry.phase} ──`);
+            lines.push(...entry.details);
+          }
+          useStore.getState().appendLog(lines);
+        }
+        // Auto-play after 1s delay
+        if (autoPlayTimerRef.current) clearTimeout(autoPlayTimerRef.current);
+        autoPlayTimerRef.current = setTimeout(() => {
+          playbackTimeRef.current = 0;
+          useStore.getState().setCurrentPhase(0);
+          setPhaseBlendDirect(0);
+          useStore.getState().setPlaying(true);
+        }, 1000);
       }
     };
     workerRef.current = w;
     return () => w.terminate();
   }, []);
 
-  // Auto-run simulation when seed+target are set, or any param changes
-  useEffect(() => {
-    if (seedId && targetId && dataLoaded && !simulating) {
-      runSimulation();
-    }
-  }, [seedId, targetId, landCurve, floorCurve, totalPhases, wSuit, wProx, wAdv, maxLevels, hfStacking]);
-
-  const runSimulation = useCallback(() => {
-    const cells = getCellData();
-    const adj = getAdjacency();
-    if (!cells || !adj || !seedId || !targetId || !workerRef.current) return;
-
-    setSimulating(true);
-    const store = useStore.getState();
-    workerRef.current.postMessage({
-      cells,
-      adjacency: adj,
-      seedId,
-      targetId,
-      totalPhases,
-      landCurve,
-      floorCurve,
-      wSuit: store.wSuit,
-      wProx: store.wProx,
-      wAdv: store.wAdv,
-      maxLevels: store.maxLevels,
-      hfStacking: store.hfStacking,
-    });
-  }, [seedId, targetId, totalPhases, landCurve, floorCurve, wSuit, wProx, wAdv, maxLevels, hfStacking]);
-
-  // Animation loop
+  // Smooth animation loop — float-based phase tracking at 60fps
   useEffect(() => {
     if (!playing || phases.length === 0) {
       if (animRef.current) {
@@ -84,278 +67,168 @@ export default function ControlPanel() {
       return;
     }
 
-    const interval = 100 / playSpeed;
+    let lastTs = performance.now();
+    const phasesPerMs = playSpeed / 1000; // e.g. 15 phases/sec = 0.015 phases/ms
 
     const tick = (ts: number) => {
-      const elapsed = ts - lastTickRef.current;
-      if (elapsed >= interval) {
-        lastTickRef.current = ts;
-        const store = useStore.getState();
-        const next = store.currentPhase + 1;
-        if (next >= store.phases.length) {
-          if (store.looping) {
-            setCurrentPhase(0);
-          } else {
-            setPlaying(false);
-            return;
-          }
+      const dt = ts - lastTs;
+      lastTs = ts;
+
+      playbackTimeRef.current += dt * phasesPerMs;
+      const store = useStore.getState();
+      const maxPhase = store.phases.length - 1;
+
+      if (playbackTimeRef.current >= maxPhase) {
+        if (store.looping) {
+          playbackTimeRef.current = 0;
         } else {
-          setCurrentPhase(next);
+          setCurrentPhase(maxPhase);
+          setPhaseBlendDirect(0);
+          setPlaying(false);
+          return;
         }
       }
+
+      const intPhase = Math.floor(playbackTimeRef.current);
+      const blend = playbackTimeRef.current - intPhase;
+      // Only update currentPhase when the integer changes (avoids unnecessary React re-renders)
+      if (intPhase !== store.currentPhase) {
+        setCurrentPhase(intPhase);
+      }
+      // Write blend directly to module variable (avoids 60 Zustand updates/sec)
+      setPhaseBlendDirect(blend);
+
       animRef.current = requestAnimationFrame(tick);
     };
 
-    lastTickRef.current = performance.now();
     animRef.current = requestAnimationFrame(tick);
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
     };
   }, [playing, playSpeed, phases.length]);
 
+  // Auto-run simulation
+  useEffect(() => {
+    if (seedId && targetId && dataLoaded && !simulating) {
+      runSimulation();
+    }
+  }, [seedId, targetId, territoryCurve, computeCurve, totalPhases, wSuit, wProx, wAdv, maxLevels, hfStacking]);
+
+  const runSimulation = useCallback(() => {
+    const cells = getCellData();
+    const adj = getAdjacency();
+    if (!cells || !adj || !seedId || !targetId || !workerRef.current) return;
+
+    // Stop playback and clear auto-play timer
+    setPlaying(false);
+    if (autoPlayTimerRef.current) clearTimeout(autoPlayTimerRef.current);
+    playbackTimeRef.current = 0;
+
+    setSimulating(true);
+    useStore.getState().clearLog();
+    const store = useStore.getState();
+    workerRef.current.postMessage({
+      cells,
+      adjacency: adj,
+      seedId,
+      targetId,
+      totalPhases,
+      landCurve: territoryCurve,
+      floorCurve: computeCurve,
+      wSuit: store.wSuit,
+      wProx: store.wProx,
+      wAdv: store.wAdv,
+      maxLevels: store.maxLevels,
+      hfStacking: store.hfStacking,
+    });
+  }, [seedId, targetId, totalPhases, territoryCurve, computeCurve, wSuit, wProx, wAdv, maxLevels, hfStacking]);
+
   const togglePlay = useCallback(() => {
     if (playing) {
       setPlaying(false);
     } else if (phases.length > 0) {
       if (currentPhase >= phases.length - 1) {
+        playbackTimeRef.current = 0;
         setCurrentPhase(0);
+      } else {
+        playbackTimeRef.current = currentPhase;
       }
       setPlaying(true);
     }
   }, [playing, phases.length, currentPhase]);
 
-  const handleExportDXF = useCallback(() => {
-    const cells = getCellData();
-    if (!cells || phases.length === 0) return;
-    const snapshot = phases[currentPhase];
-    if (!snapshot) return;
-    const dxf = exportPhaseDXF(snapshot, currentPhase, cells);
-    const padded = String(currentPhase).padStart(3, '0');
-    downloadDXF(dxf, `growth_phase_${padded}.dxf`);
-  }, [phases, currentPhase]);
+  // Scale bar
+  const s = viewScale;
+  const sbCandidates = [500, 1000, 2000, 5000, 10000, 20000, 50000];
+  let sbDist = 5000;
+  for (const c of sbCandidates) {
+    if (c * s > 40 && c * s < 200) { sbDist = c; break; }
+  }
+  const kmLabel = sbDist >= 1000 ? `${sbDist / 1000} km` : `${sbDist} m`;
+  const miLabel = sbDist >= 1000 ? `${(sbDist / 1609.34).toFixed(1)} mi` : `${Math.round(sbDist * 3.28084)} ft`;
 
-  const handleExportPython = useCallback(() => {
-    const cells = getCellData();
-    if (!cells || phases.length === 0) return;
-    const script = exportPythonScript(phases, cells, seedId, targetId, landCurve, floorCurve);
-    downloadPythonScript(script, `growth_sim_4x.py`);
-  }, [phases, seedId, targetId, landCurve, floorCurve]);
-
-  const [exportProgress, setExportProgress] = useState<{ pct: number; label: string } | null>(null);
-
-  const handleExportFrames = useCallback(async () => {
-    if (phases.length === 0 || !seedId || !targetId) return;
-    setPlaying(false);
-    try {
-      await exportFrameSequence(
-        renderPlanToCanvas,
-        DEFAULT_EXPORT_CONFIG,
-        (p) => {
-          if (p.stage === 'rendering') {
-            setExportProgress({
-              pct: Math.round((p.current / p.total) * 100),
-              label: 'RENDERING ' + p.current + '/' + p.total,
-            });
-          } else if (p.stage === 'packing') {
-            setExportProgress({ pct: 100, label: 'PACKING ZIP...' });
-          } else {
-            setExportProgress(null);
-          }
-        },
-      );
-    } catch (err) {
-      setExportProgress(null);
-      console.error('Export failed:', err);
-    }
-  }, [phases.length, seedId, targetId]);
-
-  const handleResetPlacement = useCallback(() => {
-    setPlaying(false);
-    useStore.getState().setSeedId(null);
-    useStore.getState().setTargetId(null);
-    useStore.getState().setPhases([]);
-    useStore.getState().setCurrentPhase(0);
-    setPlacementMode('seed');
-  }, []);
+  // Seed/target cell info
+  const cellData = getCellData();
+  const seedCell = seedId && cellData ? cellData[seedId] : null;
+  const targetCell = targetId && cellData ? cellData[targetId] : null;
 
   return (
     <div style={styles.container}>
-      {/* Status */}
-      <div style={styles.section}>
-        <div style={styles.label}>
-          {!dataLoaded ? 'LOADING DATA...' :
-           placementMode === 'seed' ? 'CLICK MAP TO PLACE SEED' :
-           placementMode === 'target' ? 'CLICK MAP TO PLACE TARGET' :
-           simulating ? 'SIMULATING...' :
-           `PHASE ${currentPhase} / ${phases.length - 1}`}
-        </div>
+      {/* Title + play/pause */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <div style={styles.title}>Fieldwork</div>
         {seedId && (
-          <button onClick={handleResetPlacement} style={styles.resetBtn}>
-            RESET
-          </button>
-        )}
-      </div>
-
-      {/* Phase Slider */}
-      {phases.length > 0 && (
-        <div style={styles.section}>
-          <div style={styles.miniLabel}>PHASE SCRUBBER</div>
-          <input
-            type="range"
-            min={0}
-            max={phases.length - 1}
-            value={currentPhase}
-            onChange={(e) => {
-              setPlaying(false);
-              setCurrentPhase(Number(e.target.value));
-            }}
-            style={styles.slider}
-          />
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#555', fontSize: 9 }}>0</span>
-            <span style={{ color: '#F5F5F5', fontSize: 10 }}>{currentPhase}</span>
-            <span style={{ color: '#555', fontSize: 9 }}>{phases.length - 1}</span>
-          </div>
-        </div>
-      )}
-
-      {/* Growth Profile Info */}
-      <div style={{ ...styles.section, borderColor: '#007AFF' }}>
-        <div style={{ ...styles.sectionTitle, color: '#007AFF' }}>GROWTH PROFILE</div>
-        <div style={styles.grayText}>DRAG POINTS ON GRAPH</div>
-        <div style={styles.grayText}>DBL-CLICK = ADD POINT</div>
-        <div style={styles.grayText}>RIGHT-CLICK = REMOVE</div>
-        <div style={{ ...styles.grayText, marginTop: 4 }}>WHITE = LAND AREA</div>
-        <div style={styles.grayText}>BLUE = FLOOR SPACE</div>
-        {phases.length > 0 && phases[currentPhase] && (
-          <div style={{ marginTop: 6 }}>
-            <div style={{ color: '#F5F5F5', fontSize: 10 }}>
-              LAND: {phases[currentPhase].landArea.toFixed(1)} km²
-            </div>
-            <div style={{ color: 'rgba(100,170,255,0.9)', fontSize: 10 }}>
-              FLOOR: {phases[currentPhase].floorSpace.toFixed(1)} km²
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Export */}
-      <div style={styles.section}>
-        <div style={styles.row}>
-          <div>
-            <div style={styles.miniLabel}>EXPORT PHASE</div>
-            <button
-              onClick={handleExportDXF}
-              style={styles.exportBtn}
-              disabled={phases.length === 0}
-            >
-              DXF
-            </button>
-          </div>
-          <div>
-            <div style={styles.miniLabel}>EXPORT SIM</div>
-            <button
-              onClick={handleExportPython}
-              style={styles.exportBtn}
-              disabled={phases.length === 0}
-            >
-              PY 4x
-            </button>
-          </div>
-          <div>
-            <div style={styles.miniLabel}>EXPORT VIDEO</div>
-            <button
-              onClick={handleExportFrames}
-              style={styles.exportBtn}
-              disabled={!seedId || !targetId || phases.length === 0 || exportProgress !== null}
-            >
-              60FPS
-            </button>
-          </div>
-        </div>
-        {exportProgress && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-              <span style={{ color: '#007AFF', fontSize: 9 }}>{exportProgress.label}</span>
-              <span style={{ color: '#007AFF', fontSize: 9 }}>{exportProgress.pct}%</span>
-            </div>
-            <div style={styles.progressTrack}>
-              <div style={{ ...styles.progressBar, width: exportProgress.pct + '%' }} />
-            </div>
-          </div>
-        )}
-        {!seedId && phases.length === 0 && (
-          <div style={{ marginTop: 6, color: '#555', fontSize: 9 }}>
-            PLACE SEED + TARGET TO ENABLE EXPORT
-          </div>
-        )}
-      </div>
-
-      {/* Playback */}
-      <div style={styles.section}>
-        <div style={styles.sectionTitle}>TOTAL PHASES</div>
-        <div style={styles.row}>
-          {PHASE_OPTIONS.map((n) => (
-            <button
-              key={n}
-              onClick={() => { setTotalPhases(n); }}
-              style={{
-                ...styles.phaseBtn,
-                color: totalPhases === n ? '#F5F5F5' : '#555',
-                borderColor: totalPhases === n ? '#F5F5F5' : '#333',
-              }}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-
-        {/* Play + Loop */}
-        <div style={{ ...styles.row, marginTop: 8 }}>
           <button
             onClick={togglePlay}
-            style={{
-              ...styles.playBtn,
-              flex: 1,
-              marginTop: 0,
-              color: playing ? '#007AFF' : '#F5F5F5',
-              borderColor: playing ? '#007AFF' : '#F5F5F5',
-            }}
-            disabled={!seedId || !targetId || simulating || phases.length === 0}
+            style={styles.playBtn}
+            disabled={simulating || phases.length === 0}
+            title={playing ? 'Pause' : 'Play'}
           >
-            {playing ? 'PAUSE' : 'PLAY'}
+            {playing ? '▮▮' : '▶'}
           </button>
-          <button
-            onClick={() => setLooping(!looping)}
-            style={{
-              ...styles.phaseBtn,
-              color: looping ? '#007AFF' : '#555',
-              borderColor: looping ? '#007AFF' : '#333',
-            }}
-          >
-            LOOP
-          </button>
-        </div>
+        )}
+      </div>
 
-        {/* Speed */}
-        <div style={{ ...styles.row, marginTop: 6 }}>
-          <span style={{ color: '#555', fontSize: 9, lineHeight: '24px' }}>SPEED</span>
-          {SPEED_OPTIONS.map((s) => (
-            <button
-              key={s}
-              onClick={() => setPlaySpeed(s)}
-              style={{
-                ...styles.phaseBtn,
-                color: playSpeed === s ? '#F5F5F5' : '#555',
-                borderColor: playSpeed === s ? '#F5F5F5' : '#333',
-                padding: '2px 8px',
-                fontSize: 9,
-              }}
-            >
-              {s}x
-            </button>
-          ))}
+      {/* Map info */}
+      <div style={styles.section}>
+        <div style={styles.label}>ISN93 / LAMBERT 1993</div>
+        <div style={styles.sublabel}>EPSG:3057</div>
+      </div>
+
+      {/* Scale */}
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>SCALE</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ width: Math.max(20, sbDist * s), height: 2, background: '#F5F5F5' }} />
+          <span style={styles.value}>{kmLabel}</span>
         </div>
+        <div style={styles.sublabel}>{miLabel}</div>
+      </div>
+
+      {/* Seed / Target coordinates */}
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>SEED</div>
+        {seedCell ? (
+          <div style={styles.value}>
+            E {(seedCell.cx / 1000).toFixed(1)} N {(seedCell.cy / 1000).toFixed(1)}
+          </div>
+        ) : (
+          <div style={styles.sublabel}>not placed</div>
+        )}
+        <div style={{ ...styles.sectionTitle, marginTop: 6 }}>TARGET</div>
+        {targetCell ? (
+          <div style={styles.value}>
+            E {(targetCell.cx / 1000).toFixed(1)} N {(targetCell.cy / 1000).toFixed(1)}
+          </div>
+        ) : (
+          <div style={styles.sublabel}>not placed</div>
+        )}
+      </div>
+
+      {/* Grid info */}
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>GRID</div>
+        <div style={styles.value}>500m CELLS — {cellData ? Object.keys(cellData).length.toLocaleString() : '—'}</div>
       </div>
     </div>
   );
@@ -364,106 +237,64 @@ export default function ControlPanel() {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     position: 'absolute',
-    bottom: 8,
-    left: 4,
-    width: 'calc(11.76% - 8px)',
-    maxHeight: 'calc(100% - 16px)',
+    top: 0,
+    left: 0,
+    width: 300,
+    maxHeight: '100%',
     overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
-    gap: 6,
+    gap: 0,
     zIndex: 10,
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+    fontFamily: "'ABC Diatype', 'Helvetica Neue', sans-serif",
     fontSize: 11,
+    padding: '16px 16px',
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 400,
+    color: '#F5F5F5',
+    marginBottom: 16,
+    letterSpacing: '-0.02em',
+    fontFamily: "'ABC Diatype', 'Helvetica Neue', sans-serif",
   },
   section: {
-    border: '0.5px solid #333',
-    padding: 10,
-    background: 'rgba(0,0,0,0.85)',
+    marginBottom: 12,
   },
   sectionTitle: {
-    color: '#999',
-    fontSize: 11,
-    marginBottom: 8,
-    letterSpacing: '0.05em',
+    color: '#555',
+    fontSize: 9,
+    letterSpacing: '0.1em',
+    marginBottom: 3,
+    fontFamily: "'ABC Diatype', 'Helvetica Neue', sans-serif",
   },
   label: {
-    color: '#F5F5F5',
-    fontSize: 11,
-    letterSpacing: '0.05em',
-  },
-  grayText: {
-    color: '#555',
-    fontSize: 11,
-    marginBottom: 2,
-  },
-  row: {
-    display: 'flex',
-    gap: 8,
-  },
-  miniLabel: {
-    fontSize: 10,
     color: '#999',
-    marginBottom: 4,
+    fontSize: 11,
+    lineHeight: '15px',
   },
-  exportBtn: {
-    background: 'transparent',
-    border: '0.5px solid #F5F5F5',
-    color: '#F5F5F5',
+  sublabel: {
+    color: '#555',
     fontSize: 10,
-    padding: '4px 12px',
-    cursor: 'pointer',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+    lineHeight: '14px',
   },
-  phaseBtn: {
-    background: 'transparent',
-    border: '0.5px solid #333',
-    fontSize: 10,
-    padding: '4px 10px',
-    cursor: 'pointer',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
+  value: {
+    color: '#ccc',
+    fontSize: 11,
+    lineHeight: '16px',
   },
   playBtn: {
-    marginTop: 8,
-    width: '100%',
     background: 'transparent',
-    border: '0.5px solid #F5F5F5',
+    border: '0.5px solid rgba(255,255,255,0.2)',
+    borderRadius: 4,
     color: '#F5F5F5',
     fontSize: 11,
-    padding: '6px',
+    width: 32,
+    height: 28,
     cursor: 'pointer',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-    letterSpacing: '0.1em',
-  },
-  progressTrack: {
-    width: '100%',
-    height: 4,
-    background: '#1a1a1a',
-    border: '0.5px solid #333',
-  },
-  progressBar: {
-    height: '100%',
-    background: '#007AFF',
-    transition: 'width 0.1s linear',
-  },
-  resetBtn: {
-    marginTop: 6,
-    background: 'transparent',
-    border: '0.5px solid #555',
-    color: '#999',
-    fontSize: 9,
-    padding: '2px 8px',
-    cursor: 'pointer',
-    fontFamily: "'ABC Diatype Mono', 'Courier New', monospace",
-  },
-  slider: {
-    width: '100%',
-    height: 4,
-    appearance: 'none' as const,
-    background: '#333',
-    outline: 'none',
-    cursor: 'pointer',
-    marginBottom: 4,
-    accentColor: '#007AFF',
+    fontFamily: "'ABC Diatype', 'Helvetica Neue', sans-serif",
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 };

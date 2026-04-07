@@ -16,10 +16,10 @@ export interface GrowthCellDataFile {
 
 export type GrowthAdjacencyFile = Record<string, string[]>;
 
-/** A control point on the land area or floor space curve */
+/** A control point on any growth curve */
 export interface CurvePoint {
   phase: number;  // x: 0..totalPhases
-  value: number;  // y: km²
+  value: number;  // y: km² (territory/compute) or 0-1 (decay)
 }
 
 export interface PhaseSnapshot {
@@ -34,3 +34,5 @@ export interface SimulationResult {
 }
 
 export type PlacementMode = 'none' | 'seed' | 'target';
+
+export type ColorTheme = 'age' | 'suitability' | 'heatflux' | 'levels';
