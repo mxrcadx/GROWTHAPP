@@ -14,9 +14,11 @@ export function runSimulation() {
   const store = useStore.getState();
   if (!cells || !adj || !store.seedId || !store.targetId || !workerInstance) return;
 
-  store.setPlaying(false);
-  if (autoPlayTimer) clearTimeout(autoPlayTimer);
-  playbackTime = 0;
+  // Only stop playback on manual runs, not curve-edit re-runs
+  if (store.playing) {
+    store.setPlaying(false);
+    playbackTime = 0;
+  }
 
   store.setSimulating(true);
   store.clearLog();
@@ -41,6 +43,9 @@ let rerunTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function SimEngine() {
   const { playing, playSpeed, phases } = useStore();
+  const seedId = useStore(s => s.seedId);
+  const targetId = useStore(s => s.targetId);
+  const dataLoaded = useStore(s => s.dataLoaded);
   const territoryCurve = useStore(s => s.territoryCurve);
   const computeCurve = useStore(s => s.computeCurve);
   const animRef = useRef<number | null>(null);
@@ -51,6 +56,15 @@ export function SimEngine() {
     if (phases.length > 0) hasRunRef.current = true;
   }, [phases.length]);
 
+  // Auto-run simulation when both seed and target are placed
+  useEffect(() => {
+    if (seedId && targetId && dataLoaded && !useStore.getState().simulating && phases.length === 0) {
+      // Small delay to let the UI settle after target placement
+      const t = setTimeout(() => runSimulation(), 100);
+      return () => clearTimeout(t);
+    }
+  }, [seedId, targetId, dataLoaded]);
+
   // Re-run simulation when curves change (debounced, only after first run)
   useEffect(() => {
     if (!hasRunRef.current) return;
@@ -59,7 +73,7 @@ export function SimEngine() {
     if (rerunTimer) clearTimeout(rerunTimer);
     rerunTimer = setTimeout(() => {
       runSimulation();
-    }, 800);
+    }, 150);
     return () => { if (rerunTimer) clearTimeout(rerunTimer); };
   }, [territoryCurve, computeCurve]);
 
@@ -72,9 +86,12 @@ export function SimEngine() {
     w.onmessage = (e) => {
       if (e.data.result) {
         const res = e.data.result as SimulationResult;
-        useStore.getState().setPhases(res.phases);
-        useStore.getState().setCurrentPhase(0);
-        useStore.getState().setSimulating(false);
+        const store = useStore.getState();
+        store.setPhases(res.phases);
+        // Preserve scrubber position; clamp to new phase count
+        const clampedPhase = Math.min(store.currentPhase, res.phases.length - 1);
+        store.setCurrentPhase(clampedPhase);
+        store.setSimulating(false);
         if (e.data.log) {
           const lines: string[] = [];
           for (const entry of e.data.log) {
@@ -83,13 +100,7 @@ export function SimEngine() {
           }
           useStore.getState().appendLog(lines);
         }
-        if (autoPlayTimer) clearTimeout(autoPlayTimer);
-        autoPlayTimer = setTimeout(() => {
-          playbackTime = 0;
-          useStore.getState().setCurrentPhase(0);
-          setPhaseBlendDirect(0);
-          useStore.getState().setPlaying(true);
-        }, 1000);
+        // No autoplay — user scrubs or presses play manually
       }
     };
     workerInstance = w;

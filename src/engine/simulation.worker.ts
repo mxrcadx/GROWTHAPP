@@ -139,15 +139,8 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     expansionScore[id] = c.suit * nSuit + proximity[id] * nProx + advance[id] * nAdv;
   }
 
-  // Precompute neighbor counts
-  const neighborCount: Record<string, number> = {};
-  for (const [id, nbs] of Object.entries(adjacency)) {
-    neighborCount[id] = nbs ? nbs.length : 0;
-  }
-
   // State
   const occupied = new Map<string, number>(); // cellId -> age
-  const decayed = new Set<string>();
   const cellLevels = new Map<string, number>();
   occupied.set(seedId, 0);
 
@@ -171,7 +164,7 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
         const nbs = adjacency[occId];
         if (!nbs) continue;
         for (const nb of nbs) {
-          if (!occupied.has(nb) && !frontierSet.has(nb) && !decayed.has(nb) && cells[nb]) {
+          if (!occupied.has(nb) && !frontierSet.has(nb) && cells[nb]) {
             frontier.push(nb);
             frontierSet.add(nb);
           }
@@ -192,29 +185,21 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
       }
     }
 
-    // SHED via territory curve contraction
-    let shedFromCurve = 0;
+    // SHED: remove furthest cells from target
+    let shedCount = 0;
     if (targetCells < occupied.size) {
-      const maxShedPerPhase = Math.max(1, Math.ceil(occupied.size * 0.05));
-      const toRemove = Math.min(occupied.size - targetCells, maxShedPerPhase);
-      const maxNbCount = Math.max(1, ...Object.values(neighborCount));
-      const maxAge = Math.max(1, ...occupied.values());
-      const sorted = [...occupied.keys()].sort((a, b) => {
-        const ageA = (occupied.get(a) || 0) / maxAge;
-        const ageB = (occupied.get(b) || 0) / maxAge;
-        const sa = cells[a].suit + (neighborCount[a] || 0) / maxNbCount + ageA * 0.5;
-        const sb = cells[b].suit + (neighborCount[b] || 0) / maxNbCount + ageB * 0.5;
-        return sa - sb;
-      });
+      const toRemove = occupied.size - targetCells;
+      const sorted = [...occupied.keys()].sort(
+        (a, b) => distToTarget[b] - distToTarget[a]
+      );
       for (let i = 0; i < toRemove; i++) {
         occupied.delete(sorted[i]);
-        decayed.add(sorted[i]);
       }
-      shedFromCurve = toRemove;
+      shedCount = toRemove;
     }
 
-    if (shedFromCurve > 0) {
-      phaseLog.push(`SHED -${shedFromCurve} cells | blacklisted: ${decayed.size}`);
+    if (shedCount > 0) {
+      phaseLog.push(`SHED -${shedCount} cells`);
     }
 
     // AGE all cells
